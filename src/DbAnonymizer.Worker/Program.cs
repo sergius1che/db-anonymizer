@@ -21,7 +21,7 @@ builder.ConfigureServices((context, services) =>
         .UsePostgreSqlStorage(options =>
             options.UseNpgsqlConnection(
                 context.Configuration.GetConnectionString("PgMeta"))));
-    services.AddHangfireServer();
+    services.AddHangfireServer(options => options.WorkerCount = 1);
 
     // Репозитории pg-meta
     services.AddSingleton(new JobRepository(context.Configuration.GetConnectionString("PgMeta")!));

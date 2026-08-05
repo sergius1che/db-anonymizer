@@ -56,6 +56,28 @@ public sealed class PlanRepository
         return affected > 0;
     }
 
+    public async Task<bool> TryFreezeAsync(
+        Plan frozen,
+        CancellationToken cancellationToken = default)
+    {
+        // Атомарный conditional-update: заморозка только если план ещё черновик
+        // ('-infinity'::timestamptz). Гонка двух параллельных POST /freeze —
+        // первый выигрывает, второй получает affected=0.
+        await using var conn = new NpgsqlConnection(_connectionString);
+        await conn.OpenAsync(cancellationToken);
+        await EnsureTableAsync(conn, cancellationToken);
+        await using var cmd = new NpgsqlCommand(
+            @"UPDATE plans SET data = @data::jsonb, frozen_at = @frozen_at
+              WHERE id = @id AND frozen_at = '-infinity'::timestamptz",
+            conn);
+        cmd.Parameters.AddWithValue("id", frozen.Id);
+        cmd.Parameters.AddWithValue("data",
+            JsonSerializer.Serialize(frozen, new JsonSerializerOptions { WriteIndented = false }));
+        cmd.Parameters.AddWithValue("frozen_at", frozen.FrozenAt);
+        var affected = await cmd.ExecuteNonQueryAsync(cancellationToken);
+        return affected > 0;
+    }
+
     public async Task<Plan?> LoadAsync(string planId, CancellationToken cancellationToken = default)
     {
         await using var conn = new NpgsqlConnection(_connectionString);

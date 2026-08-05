@@ -8,3 +8,4 @@ dumps
 **/obj
 **/__pycache__
 **/*.egg-info
+*.env

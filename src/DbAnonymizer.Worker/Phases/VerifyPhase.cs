@@ -213,6 +213,8 @@ public sealed class VerifyPhase
         CancellationToken cancellationToken)
     {
         await using var cmd = new NpgsqlCommand(sql, conn);
+        // Безлимитное время: count(DISTINCT) на больших таблицах дольше 30 с (Npgsql default)
+        cmd.CommandTimeout = 0;
         var value = await cmd.ExecuteScalarAsync(cancellationToken);
         return Convert.ToInt64(value);
     }

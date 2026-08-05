@@ -93,8 +93,9 @@ services:
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
 
   # Генератор демо-данных: docker compose run --rm seed "<connection string>"
-  # (одноразовая задача, в up -d не участвует — завершается сразу)
+  # (одноразовая задача, в up -d не участвует — profiles исключает из дефолтного запуска)
   seed:
+    profiles: ["demo"]
     build:
       context: .
       dockerfile: src/DbAnonymizer.Seed/Dockerfile

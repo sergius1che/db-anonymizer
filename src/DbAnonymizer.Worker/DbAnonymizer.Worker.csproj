@@ -10,13 +10,15 @@
     <PackageReference Include="Hangfire.PostgreSql" Version="1.21.1" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!-- Прямая ссылка подавляет NU1903: транзитивный Newtonsoft.Json 11.0.1 (Hangfire)
+         содержит известную уязвимость GHSA-5crp-9r3c-p9vr -->
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 
   <ItemGroup>
     <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
     <!-- RedactMaterialBuilder читает story.txt из базового каталога воркера;
-         None-элементы из Core в потребительский output не текут -->
+         None-элемент с CopyToOutputDirectory переносит файл в publish-выход -->
     <None Include="..\..\story.txt" Link="story.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

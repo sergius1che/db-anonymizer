@@ -82,6 +82,17 @@ public sealed class EnrichPhase : IEnrichPhase
             .DistinctBy(x => x.Component)
             .ToList();
 
+        // Derive-стратегия неявно зависит от Fake-пулов firstname/lastname —
+        // derive.sql вызывает anonymize.fake(..., 'firstname'/..., ...).
+        // Если в плане есть Derive-колонки, но нет явных Fake(FirstName)/Fake(LastName),
+        // заранее добавляем нужные компоненты, иначе Apply упадёт с «relation does not exist».
+        var hasDerive = plan.Columns.Any(c => c.Strategy == StrategyType.Derive);
+        if (hasDerive)
+        {
+            AddIfMissing(byComponent, SemanticType.FirstName);
+            AddIfMissing(byComponent, SemanticType.LastName);
+        }
+
         var pools = new List<PoolComponents>(byComponent.Count);
         foreach (var (type, component) in byComponent)
         {
@@ -92,6 +103,15 @@ public sealed class EnrichPhase : IEnrichPhase
             });
         }
         return pools;
+    }
+
+    private static void AddIfMissing(
+        List<(SemanticType Type, string Component)> list,
+        SemanticType type)
+    {
+        var component = type.ToString().ToLowerInvariant();
+        if (!list.Any(x => x.Component == component))
+            list.Add((type, component));
     }
 
     private async Task<IReadOnlyList<string>> GeneratePoolAsync(

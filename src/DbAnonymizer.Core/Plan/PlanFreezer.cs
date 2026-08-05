@@ -54,8 +54,15 @@ public sealed class PlanFreezer
             Pools = draft.Pools
         };
 
-        // 5. Сохранить в pg-meta
-        await _repository.SaveAsync(frozen, cancellationToken);
+        // 5. Сохранить черновик (нужен для TryFreezeAsync — conditional UPDATE по id).
+        // SaveAsync пишет FrozenAt=default как '-infinity'::timestamptz через INSERT ON CONFLICT.
+        await _repository.SaveAsync(draft, cancellationToken);
+
+        // 6. Атомарно заморозить: только если план ещё черновик.
+        // Гонка двух параллельных POST /freeze — первый замораживает, второй получает Conflict.
+        if (!await _repository.TryFreezeAsync(frozen, cancellationToken))
+            throw new InvalidOperationException(
+                $"Plan '{draft.Id}' was frozen by a concurrent request — refresh and retry");
         return frozen;
     }
 

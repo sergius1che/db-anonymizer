@@ -46,12 +46,12 @@
 по запросу). Запуск:
 
 ```bash
-# 1. Сборка и запуск (первый раз — долго: собираются 4 образа)
+# 1. Сборка и запуск (первый раз — долго: собираются 3 образа)
 docker compose up -d --build
 
 # 2. Демо-данные во временную БД — песочница остаётся чистой для ingest
 docker compose exec pg-sandbox createdb -U anonymizer db_demo_src
-docker compose run --rm seed "Host=pg-sandbox;Port=5432;Database=db_demo_src;Username=anonymizer;Password=anonymizer"
+docker compose --profile demo run --rm seed "Host=pg-sandbox;Port=5432;Database=db_demo_src;Username=anonymizer;Password=anonymizer"
 
 # 3. «До» — исходные данные (вывод seed случайный, структура та же)
 docker compose exec pg-sandbox psql -U anonymizer -d db_demo_src -c \
@@ -163,6 +163,14 @@ LiteLLM поддерживает и другие провайдеры (anthropic
    только для локальной разработки, наружу не выставлять.
 8. **Песочница — не для прод-данных**: `fsync=off`, `wal_level=minimal`
    (скорость в ущерб durability).
+9. **Одна задача за раз**: воркер запущен с `WorkerCount=1` — конкурентные задачи
+   на одной песочнице испортят друг другу `materials.*` и `_new`/`_orig`-таблицы.
+10. **API без аутентификации и валидации**: `POST /jobs` принимает connection string
+    к любому хосту (SSRF-вектор: воркер выполнит `pg_dump` с произвольного адреса).
+    Только для локальной разработки, наружу не выставлять.
+11. **Реальный LLM — 5 компонентов**: промпты агента покрывают только FirstName,
+    LastName, MiddleName, City, CompanyName. Для других Fake-типов агент вернёт
+    ошибку; используйте fake-провайдер (по умолчанию) или дополните `prompts.py`.
 
 ## Конфигурация
 
@@ -184,7 +192,7 @@ LiteLLM поддерживает и другие провайдеры (anthropic
 
 ```bash
 dotnet build DbAnonymizer.slnx -c Release            # 0 ошибок, 0 предупреждений
-dotnet test tests/DbAnonymizer.Core.Tests            # 15/15, Docker не нужен
+dotnet test tests/DbAnonymizer.Core.Tests            # 15/15, нужен Docker (Testcontainers)
 dotnet test tests/DbAnonymizer.Integration.Tests     # 11/11, нужен Docker (Testcontainers)
 dotnet test tests/DbAnonymizer.Api.Tests             # 3/3, нужен Docker (Testcontainers)
 ```

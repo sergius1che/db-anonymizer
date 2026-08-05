@@ -23,12 +23,26 @@ public sealed class ColumnNameDetector : IDetector
         await using var conn = new NpgsqlConnection(sandboxConnectionString);
         await conn.OpenAsync(cancellationToken);
 
-        // Получаем список всех колонок из information_schema
+        // Получаем список всех колонок из information_schema + признак участия в
+        // UNIQUE/PRIMARY KEY (для суффикс-гарда и проверки Unique в VerifyPhase).
         await using var cmd = new NpgsqlCommand(
-            @"SELECT table_schema, table_name, column_name, data_type, character_maximum_length
-              FROM information_schema.columns
-              WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-              ORDER BY table_schema, table_name, ordinal_position", conn);
+            @"SELECT c.table_schema, c.table_name, c.column_name, c.data_type,
+                     c.character_maximum_length,
+                     EXISTS (
+                         SELECT 1
+                         FROM information_schema.table_constraints tc
+                         JOIN information_schema.key_column_usage kcu
+                           ON tc.constraint_catalog = kcu.constraint_catalog
+                           AND tc.constraint_schema = kcu.constraint_schema
+                           AND tc.constraint_name = kcu.constraint_name
+                         WHERE tc.constraint_type IN ('UNIQUE', 'PRIMARY KEY')
+                           AND kcu.table_schema = c.table_schema
+                           AND kcu.table_name = c.table_name
+                           AND kcu.column_name = c.column_name
+                     ) AS is_unique
+              FROM information_schema.columns c
+              WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema')
+              ORDER BY c.table_schema, c.table_name, c.ordinal_position", conn);
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
 
         var candidates = new List<ColumnCandidate>();
@@ -47,6 +61,7 @@ public sealed class ColumnNameDetector : IDetector
                         TableName = reader.GetString(reader.GetOrdinal("table_name")),
                         ColumnName = columnName,
                         DataType = reader.GetString(reader.GetOrdinal("data_type")),
+                        IsUnique = reader.GetBoolean(reader.GetOrdinal("is_unique")),
                         MaxLength = reader.IsDBNull(reader.GetOrdinal("character_maximum_length"))
                             ? null
                             : reader.GetInt32(reader.GetOrdinal("character_maximum_length")),
