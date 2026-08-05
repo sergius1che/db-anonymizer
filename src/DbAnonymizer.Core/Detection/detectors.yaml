@@ -1,0 +1,76 @@
+rules:
+  # High confidence — однозначное совпадение
+  - pattern: "^first_name$"
+    semantic_type: FirstName
+    confidence: High
+  - pattern: "^last_name$"
+    semantic_type: LastName
+    confidence: High
+  - pattern: "^middle_name$"
+    semantic_type: MiddleName
+    confidence: High
+  - pattern: "^fname$"
+    semantic_type: FirstName
+    confidence: High
+  - pattern: "^surname$"
+    semantic_type: LastName
+    confidence: High
+  - pattern: "^email$"
+    semantic_type: Email
+    confidence: High
+  - pattern: "^phone$"
+    semantic_type: Phone
+    confidence: High
+  - pattern: "^card_number$"
+    semantic_type: CardNumber
+    confidence: High
+  - pattern: "^inn$"
+    semantic_type: Inn
+    confidence: High
+  - pattern: "^snils$"
+    semantic_type: Snils
+    confidence: High
+  - pattern: "^passport"
+    semantic_type: PassportNumber
+    confidence: High
+  - pattern: "^address$"
+    semantic_type: Address
+    confidence: High
+  - pattern: "^birth"
+    semantic_type: BirthDate
+    confidence: High
+  - pattern: "^password_hash$"
+    semantic_type: PasswordHash
+    confidence: High
+  - pattern: "^salt$"
+    semantic_type: Salt
+    confidence: High
+
+  # Medium confidence — содержит, но не точное совпадение
+  - pattern: "name$"
+    semantic_type: FullName
+    confidence: Medium
+  - pattern: "phone"
+    semantic_type: Phone
+    confidence: Medium
+  - pattern: "email"
+    semantic_type: Email
+    confidence: Medium
+  - pattern: "card"
+    semantic_type: CardNumber
+    confidence: Medium
+  - pattern: "passw"
+    semantic_type: PasswordHash
+    confidence: Medium
+  - pattern: "secret"
+    semantic_type: Token
+    confidence: Medium
+  - pattern: "token"
+    semantic_type: Token
+    confidence: Medium
+  - pattern: "addr"
+    semantic_type: Address
+    confidence: Medium
+  - pattern: "login"
+    semantic_type: Login
+    confidence: Medium

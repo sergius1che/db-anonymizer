@@ -1,0 +1,6 @@
+# Зависимости сервиса агентов — фактический состав из pyproject.toml
+fastapi>=0.115
+uvicorn[standard]>=0.32
+langgraph>=0.2
+litellm>=1.50
+pydantic>=2

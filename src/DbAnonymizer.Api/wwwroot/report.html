@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DbAnonymizer — Отчёт о задаче</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      margin: 0; padding: 1.5rem; line-height: 1.5;
+      background: #f5f6f8; color: #1f2933;
+    }
+    main { max-width: 860px; margin: 0 auto; background: #fff; border: 1px solid #e1e4e8; border-radius: 8px; padding: 1.5rem; }
+    h1 { margin-top: 0; font-size: 1.5rem; }
+    a { color: #0b5fa5; }
+    .banner { padding: 0.75rem 1rem; border-radius: 6px; font-weight: 600; margin-bottom: 1rem; }
+    .banner.ok { background: #eef6ee; border: 1px solid #c6e2c6; color: #1f6d1f; }
+    .banner.fail { background: #fef3f2; border: 1px solid #fecdca; color: #b42318; }
+    .banner.error { background: #fef3f2; border: 1px solid #fecdca; color: #b42318; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #e1e4e8; vertical-align: top; }
+    th { background: #fafbfc; font-weight: 600; }
+    .meta { margin-bottom: 1.5rem; }
+    .meta dt { font-weight: 600; display: inline-block; min-width: 130px; color: #374151; }
+    .meta dd { display: inline; margin: 0 2rem 0 0; }
+    .ok-mark { color: #1f6d1f; font-weight: 600; }
+    .fail-mark { color: #b42318; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Отчёт обезличивания</h1>
+    <p><a href="jobs.html">К задачам</a></p>
+    <div id="banner"></div>
+    <dl class="meta" id="meta"></dl>
+    <table id="checks-table">
+      <thead><tr><th>Проверка</th><th>Результат</th><th>Детали</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </main>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const reportId = params.get('id');
+    const banner = document.getElementById('banner');
+    const meta = document.getElementById('meta');
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
+    function showError(text) {
+      banner.className = 'banner error';
+      banner.textContent = text;
+    }
+
+    async function loadReport() {
+      if (!reportId) {
+        showError('Не указан id отчёта: откройте страницу как report.html?id=&lt;id&gt;.');
+        return;
+      }
+      try {
+        const response = await fetch('/reports/' + encodeURIComponent(reportId));
+        if (response.status === 404) {
+          showError('Отчёт не найден. Отчёт появляется после завершения проверки целостности задачи.');
+          return;
+        }
+        if (!response.ok) throw new Error('GET /reports: HTTP ' + response.status);
+        const report = await response.json();
+
+        // Итоговый вердикт
+        banner.className = report.allChecksPassed ? 'banner ok' : 'banner fail';
+        banner.textContent = report.allChecksPassed
+          ? 'Все проверки пройдены — данные готовы к передаче.'
+          : 'Обнаружены проблемы — данные требуют внимания.';
+
+        // Метаданные
+        const items = [
+          ['Задача', report.jobId],
+          ['Seed', report.seed],
+          ['Завершена', new Date(report.completedAt).toLocaleString('ru-RU')],
+          ['Дамп на выходе', report.outputDumpPath || '—']
+        ];
+        meta.innerHTML = '';
+        for (const [label, value] of items) {
+          const dt = document.createElement('dt');
+          dt.textContent = label + ':';
+          const dd = document.createElement('dd');
+          dd.textContent = value;
+          meta.appendChild(dt);
+          meta.appendChild(dd);
+        }
+
+        // Проверки
+        const tbody = document.querySelector('#checks-table tbody');
+        tbody.innerHTML = '';
+        if (!report.checks || report.checks.length === 0) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 3;
+          td.className = 'empty';
+          td.textContent = 'Проверок нет.';
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+          return;
+        }
+        for (const check of report.checks) {
+          const tr = document.createElement('tr');
+          const name = document.createElement('td');
+          name.textContent = check.name;
+          const passed = document.createElement('td');
+          passed.className = check.passed ? 'ok-mark' : 'fail-mark';
+          passed.textContent = check.passed ? 'пройдена' : 'не пройдена';
+          const detail = document.createElement('td');
+          detail.textContent = check.detail || '—';
+          tr.appendChild(name);
+          tr.appendChild(passed);
+          tr.appendChild(detail);
+          tbody.appendChild(tr);
+        }
+      } catch (err) {
+        showError('Не удалось загрузить отчёт: ' + err.message);
+      }
+    }
+
+    loadReport();
+  </script>
+</body>
+</html>

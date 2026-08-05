@@ -1,0 +1,36 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+/packages/
+*.nupkg
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vs/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+*.env
+*.env.local
+appsettings.*.local.json
+
+# Docker
+postgres-data/
+
+# Sink output (Task 9.1): каталоги дампов из PgDumpSinkAdapter
+dumps/

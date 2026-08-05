@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DbAnonymizer.Api/DbAnonymizer.Api.csproj" />
+    <Project Path="src/DbAnonymizer.Core/DbAnonymizer.Core.csproj" />
+    <Project Path="src/DbAnonymizer.Seed/DbAnonymizer.Seed.csproj" />
+    <Project Path="src/DbAnonymizer.Worker/DbAnonymizer.Worker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DbAnonymizer.Api.Tests/DbAnonymizer.Api.Tests.csproj" />
+    <Project Path="tests/DbAnonymizer.Core.Tests/DbAnonymizer.Core.Tests.csproj" />
+    <Project Path="tests/DbAnonymizer.Integration.Tests/DbAnonymizer.Integration.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,107 @@
+services:
+  # Метаданные (Hangfire-сторадж, планы, задачи, отчёты) — только Api и Worker
+  pg-meta:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: db_anonymizer_meta
+      POSTGRES_USER: anonymizer
+      POSTGRES_PASSWORD: anonymizer
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-meta-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anonymizer -d db_anonymizer_meta"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Песочница: сюда ingest восстанавливает дамп, Apply заменяет данные,
+  # Verify выгружает обезличенный дамп (pg_dump -Fd)
+  pg-sandbox:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: db_anonymizer_sandbox
+      POSTGRES_USER: anonymizer
+      POSTGRES_PASSWORD: anonymizer
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg-sandbox-data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    command: |
+      postgres
+      -c fsync=off
+      -c synchronous_commit=off
+      -c full_page_writes=off
+      -c wal_level=minimal
+      -c max_wal_senders=0
+      -c max_replication_slots=0
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anonymizer -d db_anonymizer_sandbox"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # API: минимальный ASP.NET Core — задачи, ревью плана, отчёты, статичный UI
+  api:
+    build:
+      context: .
+      dockerfile: src/DbAnonymizer.Api/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      ConnectionStrings__PgMeta: "Host=pg-meta;Database=db_anonymizer_meta;Username=anonymizer;Password=anonymizer"
+      Agents__BaseUrl: "http://agents:8000"
+    depends_on:
+      pg-meta:
+        condition: service_healthy
+
+  # Worker: Hangfire-фоновые фазы Ingest → Introspect → Enrich → Apply → Verify.
+  # ./dumps — каталог Sink:OutputDirectory: сюда воркер кладёт выходной дамп
+  # и отсюда читает входной (передаётся в POST /jobs как dumpFilePath)
+  worker:
+    build:
+      context: .
+      dockerfile: src/DbAnonymizer.Worker/Dockerfile
+    environment:
+      ConnectionStrings__PgMeta: "Host=pg-meta;Database=db_anonymizer_meta;Username=anonymizer;Password=anonymizer"
+      ConnectionStrings__Sandbox: "Host=pg-sandbox;Database=db_anonymizer_sandbox;Username=anonymizer;Password=anonymizer"
+      Agents__BaseUrl: "http://agents:8000"
+    volumes:
+      - ./dumps:/app/dumps
+    depends_on:
+      pg-meta:
+        condition: service_healthy
+      pg-sandbox:
+        condition: service_healthy
+      agents:
+        condition: service_started
+
+  # Агенты: FastAPI + LangGraph + LiteLLM — генерация пулов фейковых значений.
+  # По умолчанию встроенный fake-провайдер (работает без API-ключа, офлайн);
+  # реальный LLM: LLM_PROVIDER=openai + OPENAI_API_KEY в .env
+  agents:
+    build:
+      context: .
+      dockerfile: src/DbAnonymizer.Agents/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      LLM_PROVIDER: "${LLM_PROVIDER:-fake}"
+      LLM_MODEL: "${LLM_MODEL:-gpt-4o-mini}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+
+  # Генератор демо-данных: docker compose run --rm seed "<connection string>"
+  # (одноразовая задача, в up -d не участвует — завершается сразу)
+  seed:
+    build:
+      context: .
+      dockerfile: src/DbAnonymizer.Seed/Dockerfile
+    depends_on:
+      pg-sandbox:
+        condition: service_healthy
+
+volumes:
+  pg-meta-data:
+  pg-sandbox-data:

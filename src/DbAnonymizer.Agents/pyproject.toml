@@ -1,0 +1,18 @@
+[project]
+name = "db-anonymizer-agents"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "langgraph>=0.2",
+    "litellm>=1.50",
+    "pydantic>=2",
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main", "schemas", "prompts", "graph", "llm_client"]

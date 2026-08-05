@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DbAnonymizer — Ревью плана</title>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      margin: 0; line-height: 1.5;
+      background: #f5f6f8; color: #1f2933;
+    }
+    header {
+      background: #fff; border-bottom: 1px solid #e1e4e8;
+      padding: 0.75rem 1.5rem; display: flex; align-items: center; gap: 1.5rem;
+      position: sticky; top: 0; z-index: 10;
+    }
+    header h1 { font-size: 1.25rem; margin: 0; }
+    .layout { display: grid; grid-template-columns: 280px 1fr; gap: 1rem; padding: 1rem 1.5rem; align-items: start; }
+    .panel { background: #fff; border: 1px solid #e1e4e8; border-radius: 8px; }
+    #tree { padding: 0.5rem 0; }
+    #tree ul { list-style: none; margin: 0; padding: 0; }
+    #tree .schema { font-weight: 600; padding: 0.5rem 1rem; color: #374151; }
+    #tree .table { display: block; width: 100%; text-align: left; border: 0; background: none;
+      padding: 0.25rem 1rem 0.25rem 2rem; cursor: pointer; color: #0b5fa5; font-size: 0.95rem; }
+    #tree .table:hover { background: #f0f6fc; }
+    #tree .table.active { background: #e3eef8; font-weight: 600; }
+    #columns { padding: 0.5rem 1rem 1rem; }
+    #columns table { border-collapse: collapse; width: 100%; }
+    #columns th, #columns td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #eef1f4; }
+    #columns th { font-weight: 600; font-size: 0.85rem; color: #6b7280; text-transform: uppercase; }
+    #columns select { padding: 0.25rem 0.4rem; min-width: 160px; }
+    .counter { font-weight: 600; white-space: nowrap; }
+    .banner { padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; }
+    .banner.frozen { background: #eef6ee; border: 1px solid #c6e2c6; color: #1f6d1f; }
+    .banner.error { background: #fef3f2; border: 1px solid #fecdca; color: #b42318; }
+    .hint { color: #6b7280; font-size: 0.9rem; }
+    button.freeze {
+      background: #0b5fa5; color: #fff; border: 0; border-radius: 6px;
+      padding: 0.5rem 1.25rem; font-size: 1rem; cursor: pointer;
+    }
+    button.freeze:disabled { background: #9aa4af; cursor: not-allowed; }
+    a { color: #0b5fa5; }
+    .muted { color: #6b7280; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Ревью плана обезличивания</h1>
+    <span class="counter" id="counter"></span>
+    <button class="freeze" id="freeze-btn" type="button">Заморозить</button>
+    <a href="jobs.html">К задачам</a>
+  </header>
+
+  <div id="messages" style="padding: 0.5rem 1.5rem;"></div>
+
+  <div class="layout">
+    <div class="panel" id="tree">
+      <div class="schema">Схемы и таблицы</div>
+      <ul id="tree-list"></ul>
+    </div>
+    <div class="panel" id="columns">
+      <p id="status" class="hint"></p>
+      <table id="columns-table">
+        <thead>
+          <tr><th>Колонка</th><th>Тип</th><th>Семантический тип</th><th>Стратегия</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    // --- Константы ---
+    // Стратегии: порядок опций в select — строго как в брифе 8.3:
+    // Keep/Fake/Format/Shift/Redact/Secret/Derive; значения — числовые значения enum StrategyType
+    const strategyOptions = [
+      { value: 0, label: 'Keep' },    // 0
+      { value: 1, label: 'Fake' },    // 1
+      { value: 3, label: 'Format' },  // 3
+      { value: 5, label: 'Shift' },   // 5
+      { value: 6, label: 'Redact' },  // 6
+      { value: 4, label: 'Secret' },  // 4
+      { value: 2, label: 'Derive' }   // 2
+    ];
+
+    const semanticLabels = {
+      0: 'Не определён', 1: 'Имя', 2: 'Фамилия', 3: 'Отчество', 4: 'ФИО',
+      5: 'E-mail', 6: 'Логин', 7: 'Телефон', 8: 'Номер карты', 9: 'ИНН',
+      10: 'СНИЛС', 11: 'Номер паспорта', 12: 'Адрес', 13: 'Организация',
+      14: 'Дата рождения', 15: 'Хэш пароля', 16: 'Соль', 17: 'Токен',
+      18: 'Внешний ID', 19: 'Свободный текст', 20: 'JSON'
+    };
+
+    // --- Состояние ---
+    const params = new URLSearchParams(window.location.search);
+    const planId = params.get('id');
+    let plan = null;          // план, полученный с сервера
+    let currentTable = null;  // фильтр по таблице: 'schema.table' или null
+    const selects = new Map(); // ColumnSpec-ссылка (по columnName+tableName) -> <select>
+
+    // --- Утилиты ---
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[ch]));
+    }
+
+    function showMessage(text, kind) {
+      const box = document.getElementById('messages');
+      box.innerHTML = kind === 'error'
+        ? '<div class="banner error">' + esc(text) + '</div>'
+        : '<div class="banner frozen">' + esc(text) + '</div>';
+    }
+
+    function clearMessage() {
+      document.getElementById('messages').innerHTML = '';
+    }
+
+    function columnKey(c) { return c.schemaName + '.' + c.tableName + '.' + c.columnName; }
+
+    // Черновик сериализуется с frozenAt = "0001-01-01T00:00:00" (DateTime.MinValue) —
+    // это НЕ замороженный план. Заморожен только план с реальной датой.
+    function isFrozen(p) {
+      return !!(p && p.frozenAt && !p.frozenAt.startsWith('0001-01-01'));
+    }
+
+    function renderFrozenState(p) {
+      const when = new Date(p.frozenAt).toLocaleString('ru-RU');
+      showMessage('План уже заморожен (' + when + '). Изменения недоступны.', 'info');
+      setFormDisabled(true);
+      document.getElementById('status').textContent =
+        'План заморожен — изменения и повторная заморозка недоступны.';
+    }
+
+    function setFormDisabled(disabled) {
+      document.querySelectorAll('#columns select').forEach(s => s.disabled = disabled);
+      document.getElementById('freeze-btn').disabled = disabled;
+    }
+
+    function updateCounter() {
+      let marked = 0;
+      for (const select of selects.values()) {
+        if (Number(select.value) !== 0) marked++; // 0 = Keep
+      }
+      document.getElementById('counter').textContent =
+        marked + ' из ' + selects.size + ' помечено';
+    }
+
+    // --- Дерево слева: schema -> table ---
+    function renderTree() {
+      const groups = new Map(); // schema -> Set(table)
+      for (const c of plan.columns) {
+        if (!groups.has(c.schemaName)) groups.set(c.schemaName, new Set());
+        groups.get(c.schemaName).add(c.tableName);
+      }
+      const list = document.getElementById('tree-list');
+      list.innerHTML = '';
+      const schemas = [...groups.keys()].sort();
+      for (const schema of schemas) {
+        const li = document.createElement('li');
+        li.appendChild(document.createElement('div')).className = 'schema';
+        li.lastChild.textContent = schema;
+        const ul = document.createElement('ul');
+        const tables = [...groups.get(schema)].sort();
+        for (const table of tables) {
+          const li2 = document.createElement('li');
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'table';
+          button.textContent = table;
+          const key = schema + '.' + table;
+          if (key === currentTable) button.classList.add('active');
+          button.addEventListener('click', () => { currentTable = key; renderColumns(); renderTree(); });
+          li2.appendChild(button);
+          ul.appendChild(li2);
+        }
+        li.appendChild(ul);
+        list.appendChild(li);
+      }
+      // Сброс фильтра
+      const all = document.createElement('li');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'table';
+      btn.textContent = 'Все таблицы';
+      if (currentTable === null) btn.classList.add('active');
+      btn.addEventListener('click', () => { currentTable = null; renderColumns(); renderTree(); });
+      all.appendChild(btn);
+      list.appendChild(all);
+    }
+
+    // --- Таблица колонок справа ---
+    function renderColumns() {
+      const tbody = document.querySelector('#columns-table tbody');
+      tbody.innerHTML = '';
+      selects.clear();
+      let columns = plan.columns;
+      if (currentTable !== null) {
+        const [schema, table] = currentTable.split('.');
+        columns = columns.filter(c => c.schemaName === schema && c.tableName === table);
+      }
+      for (const c of columns) {
+        const tr = document.createElement('tr');
+
+        const nameCell = document.createElement('td');
+        nameCell.appendChild(document.createElement('strong')).textContent = c.columnName;
+        if (c.isJsonPath && c.jsonPath) {
+          nameCell.appendChild(document.createElement('br'));
+          const hint = document.createElement('span');
+          hint.className = 'muted';
+          hint.textContent = 'JSON: ' + c.jsonPath;
+          nameCell.appendChild(hint);
+        }
+        tr.appendChild(nameCell);
+
+        const typeCell = document.createElement('td');
+        typeCell.textContent = c.dataType || '—';
+        tr.appendChild(typeCell);
+
+        const semanticCell = document.createElement('td');
+        semanticCell.textContent = semanticLabels[c.semanticType] ?? ('Неизвестно (' + c.semanticType + ')');
+        tr.appendChild(semanticCell);
+
+        const strategyCell = document.createElement('td');
+        const select = document.createElement('select');
+        for (const opt of strategyOptions) {
+          const option = document.createElement('option');
+          option.value = String(opt.value);
+          option.textContent = opt.label;
+          if (c.strategy === opt.value) option.selected = true;
+          select.appendChild(option);
+        }
+        select.addEventListener('change', updateCounter);
+        strategyCell.appendChild(select);
+        tr.appendChild(strategyCell);
+
+        selects.set(columnKey(c), select);
+        tbody.appendChild(tr);
+      }
+      const frozen = isFrozen(plan);
+      setFormDisabled(frozen);
+      document.getElementById('status').textContent = frozen
+        ? 'План заморожен — изменения недоступны.'
+        : (currentTable === null
+            ? 'Всего колонок: ' + plan.columns.length + '. Отметьте стратегии для чувствительных колонок.'
+            : 'Таблица: ' + currentTable + ' — колонок: ' + columns.length + '.');
+      updateCounter();
+    }
+
+    // --- Заморозка: сохранить стратегии (PUT), затем заморозить (POST) ---
+    async function freezePlan() {
+      const button = document.getElementById('freeze-btn');
+      button.disabled = true;
+      clearMessage();
+      try {
+        // 1. Сохранить стратегии черновика. При фильтре по таблице select'ы
+        //    отфильтрованных колонок в DOM отсутствуют — берём стратегию из плана.
+        const payload = plan.columns.map(c => {
+          const select = selects.get(columnKey(c));
+          return {
+            schemaName: c.schemaName,
+            tableName: c.tableName,
+            columnName: c.columnName,
+            dataType: c.dataType,
+            isUnique: c.isUnique,
+            semanticType: c.semanticType,
+            strategy: select ? Number(select.value) : c.strategy,
+            isJsonPath: c.isJsonPath,
+            jsonPath: c.jsonPath,
+            distinctCount: c.distinctCount,
+            rowCount: c.rowCount
+          };
+        });
+        const putResponse = await fetch('/plans/' + encodeURIComponent(planId), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (putResponse.status === 409) {
+          // План уже заморожен (гонка или фриз извне) — перечитать состояние
+          await reloadPlan(true);
+          return;
+        }
+        if (!putResponse.ok) throw new Error('PUT /plans: HTTP ' + putResponse.status);
+
+        // 2. Заморозить
+        const freezeResponse = await fetch('/plans/' + encodeURIComponent(planId) + '/freeze', {
+          method: 'POST'
+        });
+        if (freezeResponse.status === 409) {
+          await reloadPlan(true);
+          return;
+        }
+        if (!freezeResponse.ok) throw new Error('POST /plans/freeze: HTTP ' + freezeResponse.status);
+
+        showMessage('План заморожен — запущено обогащение.', 'ok');
+        await reloadPlan(false);
+      } catch (err) {
+        showMessage('Ошибка: ' + err.message, 'error');
+        button.disabled = isFrozen(plan);
+      }
+    }
+
+    // --- Загрузка плана ---
+    async function reloadPlan(showFrozenBanner) {
+      const response = await fetch('/plans/' + encodeURIComponent(planId));
+      if (response.status === 404) {
+        showMessage('План не найден. План создаётся после интроспекции задачи.', 'error');
+        document.getElementById('status').textContent = 'План не найден';
+        document.getElementById('freeze-btn').disabled = true;
+        return;
+      }
+      if (!response.ok) throw new Error('GET /plans: HTTP ' + response.status);
+      plan = await response.json();
+      renderTree();
+      renderColumns();
+      if (isFrozen(plan) && showFrozenBanner) renderFrozenState(plan);
+    }
+
+    async function loadPlan() {
+      try {
+        await reloadPlan(true);
+      } catch (err) {
+        showMessage('Не удалось загрузить план: ' + err.message, 'error');
+      }
+    }
+
+    document.getElementById('freeze-btn').addEventListener('click', freezePlan);
+    if (!planId) {
+      showMessage('Не указан id плана: откройте страницу как plan-review.html?id=&lt;id&gt;.', 'error');
+    } else {
+      loadPlan();
+    }
+  </script>
+</body>
+</html>
