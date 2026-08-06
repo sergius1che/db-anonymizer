@@ -64,11 +64,12 @@ docker compose exec pg-sandbox pg_dump -U anonymizer -d db_demo_src -Fd -j 4 -f 
 docker compose cp pg-sandbox:/demo ./dumps/demo
 docker compose exec pg-sandbox dropdb -U anonymizer db_demo_src
 
-# 5. Создать задачу (идентификатор из ответа запомните)
+# 5. Создать задачу (идентификатор из ответа запомните). seed/suffixWidth —
+#    явные входы задачи, опциональны (без них Introspect подставит свои значения)
 curl -X POST http://localhost:8080/jobs \
   -H "Content-Type: application/json" \
-  -d '{"dumpFilePath": "dumps/demo"}'
-# → {"id":"<jobId>","status":0,"source":{...},"createdAt":"…"}
+  -d '{"source": {"dumpFilePath": "dumps/demo"}}'
+# → {"id":"<jobId>","status":0,"source":{...},"seed":null,"suffixWidth":null,"createdAt":"…"}
 
 # 6. Ревью плана и заморозка: http://localhost:8080
 #    Список задач (jobs.html) → задача → план с детекцией и стратегиями → Freeze.
@@ -100,22 +101,28 @@ docker compose exec pg-sandbox psql -U anonymizer -d db_anonymizer_sandbox -c \
 | users | email | `alexey.petrov@mail.ru` | Derive — из фейкового имени, домен `mail.invalid` |
 | users | phone | `+79161234567` | Format — FPE-перестановка, формат сохраняется |
 | users | password_hash | `$2a$10$…` | Secret — хэш dev-пароля |
-| users | birth_date | `1985-03-12` | Shift — сдвиг в пределах ±5 лет |
+| users | birth_date | `1985-03-12` | Shift — сдвиг в пределах ±10 лет (3650 дней) |
 | profiles | passport | `1234 567890` | Redact — подстановка из рассказа (`story.txt`) |
 | profiles | inn | `770123456789` | Format |
 | profiles | metadata (jsonb) | `{"source": "…"}` | Redact по json-путям |
 | orders | user_email | `alexey.petrov@mail.ru` | Derive — согласовано с `users.email` |
 | orders | card_number | `4532 1234 1234 1234` | Format |
 
-Фактический результат одного из прогонов:
+Фактический результат прогона (одна и та же строка `users.id=1`, полный цикл
+Ingest → Introspect → Review → Freeze → Enrich → Apply → Verify реальным кодом,
+offline fake-провайдер — с реальным LLM имена будут правдоподобными, см.
+«Реальный LLM-провайдер»):
 
 ```
-ДО:   alexey.petrov@mail.ru | +79161234567 | 4532 1234 1234 1234
-ПОСЛЕ: maria.sokolova.k3f9x2@mail.invalid | +79953471256 | 5491 9876 5432 1098
+ДО:    FirstName1 | user1@example.com | +79000000001
+ПОСЛЕ: FakeFirst0174 rckqji | fakefirst0174.fakelast0290.r226n6@mail.invalid | +7 422 164-52-29
 ```
+
+Значения зависят от seed и пулов — это не гарантированно повторяемый пример,
+а точный слепок одного реального прогона.
 
 Скриншоты интерфейса будут добавлены позже; до этого момента секция заменена
-текстовыми примерами — фактические значения зависят от seed и пулов.
+текстовыми примерами.
 
 > Повторный прогон демо: `docker compose down -v && docker compose up -d`
 > (сбрасывает обе БД — песочница должна быть пустой перед ingest;
@@ -168,9 +175,18 @@ LiteLLM поддерживает и другие провайдеры (anthropic
 10. **API без аутентификации и валидации**: `POST /jobs` принимает connection string
     к любому хосту (SSRF-вектор: воркер выполнит `pg_dump` с произвольного адреса).
     Только для локальной разработки, наружу не выставлять.
-11. **Реальный LLM — 5 компонентов**: промпты агента покрывают только FirstName,
-    LastName, MiddleName, City, CompanyName. Для других Fake-типов агент вернёт
-    ошибку; используйте fake-провайдер (по умолчанию) или дополните `prompts.py`.
+11. **Реальный LLM — 6 компонентов**: промпты агента покрывают только FirstName,
+    LastName, MiddleName, City, CompanyName, Address. Для других Fake-типов агент
+    вернёт ошибку; используйте fake-провайдер (по умолчанию) или дополните
+    `prompts.py`. `PoolSize` по умолчанию — 300: домен некоторых компонентов
+    (напр. городов России) заведомо меньше нескольких тысяч, а один вызов
+    реального LLM обычно не выдаёт больше нескольких сотен строк за раз.
+12. **Format-стратегия (FPE) — известные длины оригинала**: маска подбирается
+    по точному числу цифр (`materials.format_templates`, несколько строк на
+    семантический тип — карты 13/16 цифр, ИНН 10/12). Для длины, для которой
+    маски не сконфигурировано, значение всё равно анонимизируется (permutation
+    той же длины), но без визуального форматирования — original не раскрывается
+    ни в каком случае.
 
 ## Конфигурация
 
@@ -179,7 +195,7 @@ LiteLLM поддерживает и другие провайдеры (anthropic
 | `ConnectionStrings__PgMeta` | api, worker | `Host=pg-meta;…` | метаданные |
 | `ConnectionStrings__Sandbox` | worker | `Host=pg-sandbox;…` | песочница |
 | `Agents__BaseUrl` | api, worker | `http://agents:8000` | адрес агентов |
-| `Agents__PoolSize` | worker | `2048` | размер пула значений |
+| `Agents__PoolSize` | api, worker | `300` | размер пула значений (фризится с планом) |
 | `Sink__OutputDirectory` | worker | `./dumps` | каталог выходных дампов |
 | `LLM_PROVIDER` / `LLM_MODEL` / `OPENAI_API_KEY` | agents | `fake` / `gpt-4o-mini` / — | генератор значений |
 
@@ -192,9 +208,9 @@ LiteLLM поддерживает и другие провайдеры (anthropic
 
 ```bash
 dotnet build DbAnonymizer.slnx -c Release            # 0 ошибок, 0 предупреждений
-dotnet test tests/DbAnonymizer.Core.Tests            # 15/15, нужен Docker (Testcontainers)
-dotnet test tests/DbAnonymizer.Integration.Tests     # 11/11, нужен Docker (Testcontainers)
-dotnet test tests/DbAnonymizer.Api.Tests             # 3/3, нужен Docker (Testcontainers)
+dotnet test tests/DbAnonymizer.Core.Tests            # 31/31, нужен Docker (Testcontainers)
+dotnet test tests/DbAnonymizer.Integration.Tests     # 16/16, нужен Docker (Testcontainers)
+dotnet test tests/DbAnonymizer.Api.Tests             # 7/7, нужен Docker (Testcontainers)
 ```
 
 ## Архитектура
@@ -215,8 +231,9 @@ dotnet test tests/DbAnonymizer.Api.Tests             # 3/3, нужен Docker (T
 ## Проверено
 
 - `dotnet build DbAnonymizer.slnx -c Release` — 0 ошибок, 0 предупреждений.
-- `dotnet test` — Core 15/15, Api 3/3, Integration 11/11 (Docker).
+- `dotnet test` — Core 31/31, Api 7/7, Integration 16/16 (Docker).
 - `docker compose config` — валиден, без предупреждений.
 - `docker compose build` — образы api, worker, agents, seed собираются.
-- Демо-прогон «до/после» по инструкции выше — задача доходит до Complete,
-  отчёт и выходной дамп формируются.
+- Полный демо-прогон «до/после» через `docker compose up` по инструкции выше:
+  задача реально доходит до `Complete` (все 29 проверок Verify пройдены),
+  отчёт и выходной анонимизированный дамп формируются на диске.

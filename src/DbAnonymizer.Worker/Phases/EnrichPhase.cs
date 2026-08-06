@@ -21,27 +21,27 @@ public sealed class EnrichPhase : IEnrichPhase
 
     private readonly HttpClient _httpClient;
     private readonly string _agentsBaseUrl;
-    private readonly int _poolSize;
     private readonly string _sandboxConnectionString;
     private readonly PlanRepository _plans;
     private readonly JobRepository _jobs;
+    private readonly PoolMaterialsRepository _poolMaterials;
     private readonly IReadOnlyList<IStrategyMaterialBuilder> _staticBuilders;
 
     public EnrichPhase(
         HttpClient httpClient,
         string agentsBaseUrl,
-        int poolSize,
         string sandboxConnectionString,
         PlanRepository plans,
         JobRepository jobs,
+        PoolMaterialsRepository poolMaterials,
         IReadOnlyList<IStrategyMaterialBuilder> staticBuilders)
     {
         _httpClient = httpClient;
         _agentsBaseUrl = agentsBaseUrl;
-        _poolSize = poolSize;
         _sandboxConnectionString = sandboxConnectionString;
         _plans = plans;
         _jobs = jobs;
+        _poolMaterials = poolMaterials;
         _staticBuilders = staticBuilders;
     }
 
@@ -74,52 +74,36 @@ public sealed class EnrichPhase : IEnrichPhase
         Plan plan,
         CancellationToken cancellationToken)
     {
-        // Конвенция ключей пулов (Task 4.3/7.1): SemanticType.ToString().ToLowerInvariant(),
-        // например firstname/cardnumber — их адресует fake.sql через materials.pool_<component>
-        var byComponent = plan.Columns
-            .Where(c => c.Strategy == StrategyType.Fake)
-            .Select(c => (Type: c.SemanticType, Component: c.SemanticType.ToString().ToLowerInvariant()))
-            .DistinctBy(x => x.Component)
-            .ToList();
-
-        // Derive-стратегия неявно зависит от Fake-пулов firstname/lastname —
-        // derive.sql вызывает anonymize.fake(..., 'firstname'/..., ...).
-        // Если в плане есть Derive-колонки, но нет явных Fake(FirstName)/Fake(LastName),
-        // заранее добавляем нужные компоненты, иначе Apply упадёт с «relation does not exist».
-        var hasDerive = plan.Columns.Any(c => c.Strategy == StrategyType.Derive);
-        if (hasDerive)
-        {
-            AddIfMissing(byComponent, SemanticType.FirstName);
-            AddIfMissing(byComponent, SemanticType.LastName);
-        }
-
-        var pools = new List<PoolComponents>(byComponent.Count);
-        foreach (var (type, component) in byComponent)
+        // plan.Pools — заморожен при фризе (PlanFreezer + PoolPlanner): состав и размер
+        // пулов уже зафиксированы, здесь только материализуем значения
+        var pools = new List<PoolComponents>(plan.Pools.Count);
+        foreach (var pool in plan.Pools)
         {
             pools.Add(new PoolComponents
             {
-                Component = component,
-                Values = await GeneratePoolAsync(type, component, cancellationToken)
+                Component = pool.Component,
+                Values = await GeneratePoolAsync(
+                    plan.Id, pool.SemanticType, pool.Component, pool.Size, cancellationToken)
             });
         }
         return pools;
     }
 
-    private static void AddIfMissing(
-        List<(SemanticType Type, string Component)> list,
-        SemanticType type)
-    {
-        var component = type.ToString().ToLowerInvariant();
-        if (!list.Any(x => x.Component == component))
-            list.Add((type, component));
-    }
-
     private async Task<IReadOnlyList<string>> GeneratePoolAsync(
+        string planId,
         SemanticType type,
         string component,
+        int requestedSize,
         CancellationToken cancellationToken)
     {
-        var request = new AgentGenerateRequest(type.ToString(), component, _poolSize, "ru");
+        // Кэш в pg-meta: повторный Enrich того же замороженного плана переиспользует
+        // те же значения пула — иначе тот же (seed, original) выбирал бы тот же индекс,
+        // но в другое слово (LLM не гарантирует одинаковый ответ на два вызова)
+        var cached = await _poolMaterials.TryLoadAsync(planId, component, cancellationToken);
+        if (cached is not null)
+            return cached;
+
+        var request = new AgentGenerateRequest(type.ToString(), component, requestedSize, "ru");
         using var response = await _httpClient.PostAsJsonAsync(
             $"{_agentsBaseUrl}/generate", request, JsonOptions, cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -135,6 +119,17 @@ public sealed class EnrichPhase : IEnrichPhase
             throw new InvalidOperationException(
                 $"Agent /generate returned no values for component '{component}'");
         }
+        if (body.Values.Count != requestedSize)
+        {
+            // Модуль хэширования в fake.sql — размер пула, зафиксированный в плане.
+            // Ответ другой длины делает несовпадающим modulus, использованный при
+            // следующем Apply, с тем, что реально загружено в materials.pool_<component>
+            throw new InvalidOperationException(
+                $"Agent /generate returned {body.Values.Count} values for component '{component}', " +
+                $"expected {requestedSize} (frozen pool size)");
+        }
+
+        await _poolMaterials.SaveAsync(planId, component, body.Values, cancellationToken);
         return body.Values;
     }
 

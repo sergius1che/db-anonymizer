@@ -30,16 +30,30 @@ def build_graph() -> CompiledStateGraph:
         return state
 
     def generate(state: AgentState) -> AgentState:
+        # Накапливаем уникальные значения между попытками и на retry просим у LLM
+        # только недостающий остаток — раньше каждая попытка запрашивала весь
+        # pool_size заново и отбрасывала уже сгенерированные строки предыдущей
+        # попытки, что делало retry бессмысленным при большом pool_size
         req = state["request"]
+        existing = state.get("values", [])
+        remaining = req.pool_size - len(existing)
         llm = get_llm()
-        prompt = PROMPTS[req.component].format(count=req.pool_size)
+        prompt = PROMPTS[req.component].format(count=remaining)
         content, model_used, tokens = llm.invoke(prompt)
         lines = [line.strip() for line in content.split("\n")
                  if line.strip() and not line.strip().startswith(("#", "//", "1."))]
-        state["values"] = lines[:req.pool_size]
+        seen = set(existing)
+        for line in lines:
+            if line in seen:
+                continue
+            existing.append(line)
+            seen.add(line)
+            if len(existing) >= req.pool_size:
+                break
+        state["values"] = existing
         state["attempts"] = state.get("attempts", 0) + 1
         state["model_used"] = model_used
-        state["tokens"] = tokens
+        state["tokens"] = state.get("tokens", 0) + tokens
         return state
 
     def validate_count(state: AgentState) -> str:

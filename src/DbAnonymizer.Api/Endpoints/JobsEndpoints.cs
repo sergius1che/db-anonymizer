@@ -9,9 +9,9 @@ public static class JobsEndpoints
     public static void MapJobsEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/jobs", async (
-            SourceSpec source, JobService service, CancellationToken ct) =>
+            CreateJobRequest request, JobService service, CancellationToken ct) =>
         {
-            var job = await service.CreateJobAsync(source, ct);
+            var job = await service.CreateJobAsync(request, ct);
             return Results.Created($"/jobs/{job.Id}", job);
         });
 

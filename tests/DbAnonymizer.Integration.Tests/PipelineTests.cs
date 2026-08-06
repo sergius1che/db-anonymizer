@@ -155,6 +155,115 @@ public sealed class PipelineTests
     }
 
     [Fact]
+    public async Task DeriveStrategy_SameTableAsFakeNames_LocalPartMatchesFakeFirstAndLastName()
+    {
+        // Регрессия: derive.sql раньше вызывал anonymize.fake(seed, original_email, ...) —
+        // фейковое имя в email считалось от ORIGINAL EMAIL, а не от original first_name/
+        // last_name строки, поэтому не совпадало с тем, что показывают Fake(FirstName)/
+        // Fake(LastName) колонки той же строки. Фикс — Derive берёт вход из реальных
+        // first_name/last_name колонок ТОЙ ЖЕ таблицы, если они есть в плане.
+        await _fixture.ResetSandboxAsync();
+
+        var usersRowCount = await _fixture.GetRowCountAsync("users");
+        var columns = new[]
+        {
+            new ColumnSpec
+            {
+                SchemaName = "public",
+                TableName = "users",
+                ColumnName = "first_name",
+                DataType = "character varying",
+                SemanticType = SemanticType.FirstName,
+                Strategy = StrategyType.Fake,
+                RowCount = usersRowCount,
+                DistinctCount = 0
+            },
+            new ColumnSpec
+            {
+                SchemaName = "public",
+                TableName = "users",
+                ColumnName = "last_name",
+                DataType = "character varying",
+                SemanticType = SemanticType.LastName,
+                Strategy = StrategyType.Fake,
+                RowCount = usersRowCount,
+                DistinctCount = 0
+            },
+            new ColumnSpec
+            {
+                SchemaName = "public",
+                TableName = "users",
+                ColumnName = "email",
+                DataType = "character varying",
+                SemanticType = SemanticType.Email,
+                Strategy = StrategyType.Derive,
+                IsUnique = true,
+                RowCount = usersRowCount,
+                DistinctCount = usersRowCount
+            }
+        };
+
+        var result = await _runner.RunAsync("derive-consistency-seed", columns);
+
+        ReportAsserts.AllChecksPassed(result.Report);
+        var firstName = await _fixture.ExecuteScalarAsync<string>(
+            "SELECT first_name FROM users WHERE id = 1");
+        var lastName = await _fixture.ExecuteScalarAsync<string>(
+            "SELECT last_name FROM users WHERE id = 1");
+        var email = await _fixture.ExecuteScalarAsync<string>(
+            "SELECT email FROM users WHERE id = 1");
+        // Fake(FirstName)/Fake(LastName) сами дописывают base36-суффикс через
+        // plan.SuffixWidth ("FakeFirst0058 iqmc0y") — derive берёт то же фейковое
+        // имя без суффикса (suffix_width=0 в BuildFakeNameCall), сравниваем базовую часть
+        var firstNameBase = firstName!.Split(' ')[0];
+        var lastNameBase = lastName!.Split(' ')[0];
+        var expectedLocalPart = $"{firstNameBase}.{lastNameBase}".ToLowerInvariant();
+        Assert.StartsWith(expectedLocalPart, email);
+        Assert.Matches("^[a-z0-9.]+@mail\\.invalid$", email);
+    }
+
+    [Fact]
+    public async Task FormatStrategy_PhoneColumn_ProducesValidRussianPhoneShape()
+    {
+        // Регрессия: seed генерирует телефон по шаблону "+7###-###-##-##" — сама '7'
+        // тоже цифра, поэтому regexp_replace(original,'[^0-9]','','g') давал 11 цифр
+        // при маске "+7 000 000-00-00" (10 нулей). Лишняя 11-я цифра дописывалась
+        // как есть ПОСЛЕ маски, ломая длину и вид номера.
+        await _fixture.ResetSandboxAsync();
+
+        var result = await _runner.RunDemoPipelineAsync("format-phone-seed");
+
+        ReportAsserts.AllChecksPassed(result.Report);
+        var phone = await _fixture.ExecuteScalarAsync<string>(
+            "SELECT phone FROM users WHERE id = 1");
+        Assert.NotNull(phone);
+        Assert.Matches(@"^\+7 \d{3} \d{3}-\d{2}-\d{2}$", phone);
+    }
+
+    [Fact]
+    public async Task FormatStrategy_13DigitCardNumber_ProducesCorrectlyShapedOutput()
+    {
+        // Регрессия: materials.format_templates раньше держал одну маску на type
+        // (16 нулей для карты). Bogus.Finance.CreditCardNumber(Visa) иногда даёт
+        // 13-значный номер — под 16-значную маску он не подходил: часть символов
+        // маски оставалась незаполненной (найдено живым прогоном demo, id=4:
+        // "9589 0595 9636" вместо ожидаемых 19 символов). Фикс — несколько строк
+        // на type в materials.format_templates, точный подбор по digit_count.
+        await _fixture.ResetSandboxAsync();
+        await _fixture.ExecuteSandboxAsync(
+            "UPDATE orders SET card_number = '4029163411718' WHERE id = 1");
+
+        var result = await _runner.RunDemoPipelineAsync("format-13digit-card-seed");
+
+        ReportAsserts.AllChecksPassed(result.Report);
+        var cardNumber = await _fixture.ExecuteScalarAsync<string>(
+            "SELECT card_number FROM orders WHERE id = 1");
+        Assert.NotNull(cardNumber);
+        Assert.Matches(@"^\d{4} \d{4} \d{5}$", cardNumber);
+        Assert.Equal(13, cardNumber!.Count(char.IsDigit));
+    }
+
+    [Fact]
     public async Task Verify_DiversityBelowTolerance_ReportsFailedCheck()
     {
         await _fixture.ResetSandboxAsync();
@@ -196,7 +305,7 @@ public sealed class PipelineTests
     public async Task Freeze_PlanWithoutColumns_ThrowsExactValidationMessage()
     {
         var repository = new PlanRepository(_fixture.MetaConnectionString);
-        var freezer = new PlanFreezer(repository);
+        var freezer = new PlanFreezer(repository, poolSize: 500);
         var draft = new Plan
         {
             Id = "freeze-negative-empty",
@@ -218,7 +327,7 @@ public sealed class PipelineTests
     public async Task Freeze_SensitiveColumnWithKeep_ThrowsExactValidationMessage()
     {
         var repository = new PlanRepository(_fixture.MetaConnectionString);
-        var freezer = new PlanFreezer(repository);
+        var freezer = new PlanFreezer(repository, poolSize: 500);
         var draft = new Plan
         {
             Id = "freeze-negative-keep",

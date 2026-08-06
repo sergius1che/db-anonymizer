@@ -26,8 +26,11 @@ builder.ConfigureServices((context, services) =>
     // Репозитории pg-meta
     services.AddSingleton(new JobRepository(context.Configuration.GetConnectionString("PgMeta")!));
     services.AddSingleton(new PlanRepository(context.Configuration.GetConnectionString("PgMeta")!));
+    services.AddSingleton(new PoolMaterialsRepository(context.Configuration.GetConnectionString("PgMeta")!));
     services.AddSingleton(new ReportRepository(context.Configuration.GetConnectionString("PgMeta")!));
-    services.AddSingleton<PlanFreezer>();
+    services.AddSingleton(sp => new PlanFreezer(
+        sp.GetRequiredService<PlanRepository>(),
+        context.Configuration.GetValue<int>("Agents:PoolSize")));
     services.AddSingleton(new ReportBuilder());
 
     // Адаптеры (Task 9.1): ingest — файл-дамп или живая БД, sink — pg_dump из sandbox
@@ -82,10 +85,10 @@ builder.ConfigureServices((context, services) =>
     services.AddSingleton<IEnrichPhase>(sp => new EnrichPhase(
         new HttpClient(),
         context.Configuration["Agents:BaseUrl"]!,
-        context.Configuration.GetValue<int>("Agents:PoolSize"),
         sandbox,
         sp.GetRequiredService<PlanRepository>(),
         sp.GetRequiredService<JobRepository>(),
+        sp.GetRequiredService<PoolMaterialsRepository>(),
         sp.GetRequiredService<IReadOnlyList<IStrategyMaterialBuilder>>()));
     services.AddSingleton<IApplyPhase>(sp => new ApplyChainPhase(
         sp.GetRequiredService<JobRepository>(),

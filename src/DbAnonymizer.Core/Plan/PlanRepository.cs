@@ -60,15 +60,19 @@ public sealed class PlanRepository
         Plan frozen,
         CancellationToken cancellationToken = default)
     {
-        // Атомарный conditional-update: заморозка только если план ещё черновик
-        // ('-infinity'::timestamptz). Гонка двух параллельных POST /freeze —
-        // первый выигрывает, второй получает affected=0.
+        // Один атомарный upsert вместо separate insert+conditional-update: заморозка
+        // проходит, если строки ещё нет (первый freeze без предварительного SaveAsync)
+        // ИЛИ план ещё черновик ('-infinity'::timestamptz). Если план уже заморожен,
+        // ON CONFLICT DO UPDATE ... WHERE не срабатывает — affected=0, без промежуточного
+        // безусловного шага гонка двух параллельных POST /freeze не может разморозить
+        // план, ушедший в Enrich/Apply. Первый вызов выигрывает, второй получает affected=0.
         await using var conn = new NpgsqlConnection(_connectionString);
         await conn.OpenAsync(cancellationToken);
         await EnsureTableAsync(conn, cancellationToken);
         await using var cmd = new NpgsqlCommand(
-            @"UPDATE plans SET data = @data::jsonb, frozen_at = @frozen_at
-              WHERE id = @id AND frozen_at = '-infinity'::timestamptz",
+            @"INSERT INTO plans (id, data, frozen_at) VALUES (@id, @data::jsonb, @frozen_at)
+              ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, frozen_at = EXCLUDED.frozen_at
+              WHERE plans.frozen_at = '-infinity'::timestamptz",
             conn);
         cmd.Parameters.AddWithValue("id", frozen.Id);
         cmd.Parameters.AddWithValue("data",

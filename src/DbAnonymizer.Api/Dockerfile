@@ -1,6 +1,10 @@
 # Multi-stage: SDK собирает и публикует, aspnet-образ — рантайм API
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
+# story.txt — материал стратегии Redact (RedactMaterialBuilder), на который
+# DbAnonymizer.Core.csproj ссылается безусловно (нужен для publish, даже
+# если сам Api его не использует)
+COPY story.txt story.txt
 COPY src/DbAnonymizer.Core/ src/DbAnonymizer.Core/
 COPY src/DbAnonymizer.Api/ src/DbAnonymizer.Api/
 RUN dotnet publish src/DbAnonymizer.Api/ -c Release -o /app

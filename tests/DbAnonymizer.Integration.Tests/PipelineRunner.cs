@@ -36,8 +36,7 @@ internal sealed class PipelineRunner
             Version = "1",
             ContentHash = string.Empty,
             MaterialsHash = MaterialsHashPlaceholder,
-            Columns = columns,
-            Pools = TestPools.ToPoolSpecs()
+            Columns = columns
         };
 
         var errors = PlanValidator.Validate(draft);
@@ -45,7 +44,10 @@ internal sealed class PipelineRunner
             throw new InvalidOperationException($"Draft plan invalid: {string.Join("; ", errors)}");
 
         var repository = new PlanRepository(_fixture.MetaConnectionString);
-        var freezer = new PlanFreezer(repository);
+        // TestPools.Create() загружает пулы фиксированного размера (500) — freeze должен
+        // фризить тот же размер, иначе modulus в anonymize.fake() разойдётся с реально
+        // загруженными materials.pool_<component>
+        var freezer = new PlanFreezer(repository, poolSize: TestPools.PoolSize);
         var frozen = await freezer.FreezeAsync(draft, MaterialsHashPlaceholder, cancellationToken);
 
         // Материалы: статические билдеры, порядок как в Worker (влияет на MaterialsHash)

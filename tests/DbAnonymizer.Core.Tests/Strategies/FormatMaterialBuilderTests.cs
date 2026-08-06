@@ -40,19 +40,21 @@ public sealed class FormatMaterialBuilderTests : IAsyncLifetime
         await conn.OpenAsync();
 
         await using var cmd = new NpgsqlCommand(
-            "SELECT type, template FROM materials.format_templates ORDER BY type", conn);
+            "SELECT type, template, digit_count FROM materials.format_templates ORDER BY type, digit_count", conn);
         await using var reader = await cmd.ExecuteReaderAsync();
-        var rows = new List<(string Type, string Template)>();
+        var rows = new List<(string Type, string Template, int DigitCount)>();
         while (await reader.ReadAsync())
         {
-            rows.Add((reader.GetString(0), reader.GetString(1)));
+            rows.Add((reader.GetString(0), reader.GetString(1), reader.GetInt32(2)));
         }
 
         Assert.Equal(
         [
-            ("cardnumber", @"\d{16}"),
-            ("inn", @"\d{10}|\d{12}"),
-            ("phone", @"\d{10}"),
+            ("cardnumber", @"\d{13}", 13),
+            ("cardnumber", @"\d{16}", 16),
+            ("inn", @"\d{10}", 10),
+            ("inn", @"\d{12}", 12),
+            ("phone", @"\d{10}", 10),
         ], rows);
         Assert.Equal(64, hash.Length);
         Assert.Matches("^[0-9a-f]{64}$", hash);

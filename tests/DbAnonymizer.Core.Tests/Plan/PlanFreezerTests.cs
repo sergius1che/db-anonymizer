@@ -155,7 +155,7 @@ public sealed class PlanFreezerTests : IAsyncLifetime
         };
 
         var repository = new PlanRepository(_connectionString);
-        var freezer = new PlanFreezer(repository);
+        var freezer = new PlanFreezer(repository, poolSize: 500);
         var frozen = await freezer.FreezeAsync(plan, "materials-hash");
 
         Assert.Equal(StrategyType.Redact, frozen.Columns[0].Strategy);
@@ -167,6 +167,60 @@ public sealed class PlanFreezerTests : IAsyncLifetime
         Assert.NotNull(loaded);
         Assert.Equal(frozen.ContentHash, loaded!.ContentHash);
         Assert.Equal(StrategyType.Redact, loaded.Columns[0].Strategy);
+    }
+
+    [Fact]
+    public async Task FreezeAsync_ConcurrentCallsOnSamePlan_OnlyOneSucceeds()
+    {
+        // Регрессия (cf74868): FreezeAsync делал безусловный SaveAsync(draft) перед
+        // TryFreezeAsync. Окно между ними позволяло второму конкурентному freeze
+        // откатить frozen_at первого обратно в '-infinity' — оба вызова проходили
+        // условие и оба enqueue'или Enrich/Apply для одного jobId. Один условный
+        // upsert закрывает это окно: ровно один из двух конкурентных FreezeAsync
+        // должен победить, второй — получить InvalidOperationException.
+        var plan = new Plan
+        {
+            Id = "freeze-race-test",
+            SourceHash = "abc",
+            Seed = "seed-race",
+            Version = "1",
+            ContentHash = "not-yet-set",
+            MaterialsHash = "materials-hash",
+            Columns =
+            [
+                new ColumnSpec
+                {
+                    SchemaName = "public",
+                    TableName = "customers",
+                    ColumnName = "data",
+                    SemanticType = SemanticType.Json,
+                    Strategy = StrategyType.Keep
+                }
+            ]
+        };
+        var repository = new PlanRepository(_connectionString);
+        await repository.SaveAsync(plan); // как Introspect сохраняет черновик до freeze
+        var freezer = new PlanFreezer(repository, poolSize: 500);
+
+        var attempt1 = FreezeOrNull(freezer, plan);
+        var attempt2 = FreezeOrNull(freezer, plan);
+        var results = await Task.WhenAll(attempt1, attempt2);
+
+        Assert.Equal(1, results.Count(r => r is not null));
+        var loaded = await repository.LoadAsync(plan.Id);
+        Assert.NotEqual(default, loaded!.FrozenAt); // план не разморозился обратно
+    }
+
+    private static async Task<Plan?> FreezeOrNull(PlanFreezer freezer, Plan draft)
+    {
+        try
+        {
+            return await freezer.FreezeAsync(draft, "materials-hash");
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     public async Task DisposeAsync()

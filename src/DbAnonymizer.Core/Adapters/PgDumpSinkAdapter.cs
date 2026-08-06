@@ -8,6 +8,10 @@ namespace DbAnonymizer.Core.Adapters;
 /// </summary>
 public sealed class PgDumpSinkAdapter : ISinkAdapter
 {
+    private const string AnonymizeSchema = "anonymize";
+    private const string MaterialsSchema = "materials";
+    private const string UtilsSchema = "utils";
+
     public async Task<string> DumpAsync(
         string sandboxConnectionString,
         string outputDirectory,
@@ -28,6 +32,12 @@ public sealed class PgDumpSinkAdapter : ISinkAdapter
             "-d", database,
             "-Fd",
             "-j", Environment.ProcessorCount.ToString(),
+            // Схемы инструмента — не часть исходных данных, не должны попасть
+            // в дамп для команды разработки (materials.* содержит пулы фейков
+            // и seed-реконструируемый маппинг на оригиналы)
+            "-N", AnonymizeSchema,
+            "-N", MaterialsSchema,
+            "-N", UtilsSchema,
             "-f", dumpPath
         };
         try

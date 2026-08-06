@@ -71,7 +71,10 @@ public sealed class ApplyPhase
         // Полный список колонок в физическом порядке: CTAS копирует ВСЕ колонки,
         // не только размеченные — иначе неразмеченные молча теряются
         var tableColumns = await GetColumnNamesAsync(conn, schema, table, cancellationToken);
-        var selectParts = BuildSelectParts(tableColumns, columns, plan, shiftRangeDays);
+        var firstNameColumn = FindSiblingColumn(plan.Columns, schema, table, SemanticType.FirstName);
+        var lastNameColumn = FindSiblingColumn(plan.Columns, schema, table, SemanticType.LastName);
+        var selectParts = BuildSelectParts(
+            tableColumns, columns, plan, shiftRangeDays, firstNameColumn, lastNameColumn);
 
         var ctas = $"""
             CREATE TABLE {quotedSchema}.{quotedNewTable} AS
@@ -93,22 +96,75 @@ public sealed class ApplyPhase
         ColumnSpec col,
         string inputExpression,
         Plan plan,
-        int shiftRangeDays) => col.Strategy switch
+        int shiftRangeDays,
+        string? firstNameColumn,
+        string? lastNameColumn) => col.Strategy switch
     {
-        StrategyType.Fake => $"anonymize.fake(@seed, {inputExpression}, '{col.SemanticType.ToString().ToLowerInvariant()}', {plan.SuffixWidth})",
+        StrategyType.Fake => $"anonymize.fake(@seed, {inputExpression}, '{col.SemanticType.ToString().ToLowerInvariant()}', {GetPoolSize(plan, col.SemanticType)}, {plan.SuffixWidth})",
         StrategyType.Format => $"anonymize.format(@seed, {inputExpression}, '{col.SemanticType.ToString().ToLowerInvariant()}', {plan.SuffixWidth})",
         StrategyType.Secret => $"anonymize.secret(@seed, {inputExpression})",
         StrategyType.Shift => $"anonymize.shift(@seed, {inputExpression}, {shiftRangeDays})",
         StrategyType.Redact => $"anonymize.redact(@seed, {inputExpression})",
-        StrategyType.Derive => $"anonymize.derive(@seed, {inputExpression}, '@mail.invalid', {plan.SuffixWidth})",
+        StrategyType.Derive => BuildDeriveCall(inputExpression, plan, firstNameColumn, lastNameColumn),
         _ => inputExpression
     };
+
+    // Фейковое имя для email должно совпадать с тем, что показывают Fake(FirstName)/
+    // Fake(LastName) колонки той же строки — вход берём из реальных first/last name
+    // колонок ТОЙ ЖЕ таблицы, не из original самой email-колонки. Если в таблице нет
+    // таких колонок (Derive-колонка в другой таблице, напр. orders.user_email), падаем
+    // назад на original email — имя не совпадёт ни с чем, но результат детерминирован
+    private static string BuildDeriveCall(
+        string inputExpression,
+        Plan plan,
+        string? firstNameColumn,
+        string? lastNameColumn)
+    {
+        var firstNameFake = BuildFakeNameCall(firstNameColumn, inputExpression, SemanticType.FirstName, plan);
+        var lastNameFake = BuildFakeNameCall(lastNameColumn, inputExpression, SemanticType.LastName, plan);
+        return $"anonymize.derive(@seed, {inputExpression}, {firstNameFake}, {lastNameFake}, '@mail.invalid', {plan.SuffixWidth})";
+    }
+
+    private static string BuildFakeNameCall(
+        string? siblingColumn,
+        string fallbackInput,
+        SemanticType semanticType,
+        Plan plan)
+    {
+        var input = siblingColumn is null ? fallbackInput : $"{QuoteIdentifier(siblingColumn)}::TEXT";
+        var component = semanticType.ToString().ToLowerInvariant();
+        return $"anonymize.fake(@seed, {input}, '{component}', {GetPoolSize(plan, semanticType)}, 0)";
+    }
+
+    private static string? FindSiblingColumn(
+        IReadOnlyList<ColumnSpec> allColumns,
+        string schema,
+        string table,
+        SemanticType semanticType) =>
+        allColumns
+            .FirstOrDefault(c =>
+                c.SchemaName == schema
+                && c.TableName == table
+                && c.SemanticType == semanticType
+                && !c.IsJsonPath)
+            ?.ColumnName;
+
+    private static long GetPoolSize(Plan plan, SemanticType semanticType)
+    {
+        var pool = plan.Pools.FirstOrDefault(p => p.SemanticType == semanticType);
+        if (pool is null)
+            throw new InvalidOperationException(
+                $"Plan '{plan.Id}' needs a Fake pool for semantic type '{semanticType}' but none was frozen");
+        return pool.Size;
+    }
 
     private static IReadOnlyList<string> BuildSelectParts(
         IReadOnlyList<string> tableColumns,
         IReadOnlyList<ColumnSpec> columns,
         Plan plan,
-        int shiftRangeDays)
+        int shiftRangeDays,
+        string? firstNameColumn,
+        string? lastNameColumn)
     {
         var byColumn = columns
             .GroupBy(c => c.ColumnName, StringComparer.Ordinal)
@@ -129,7 +185,7 @@ public sealed class ApplyPhase
             {
                 // Размечена целиком: анонимизация всего значения
                 var input = $"{QuoteIdentifier(column)}::TEXT";
-                parts.Add($"{BuildAnonymizeCall(plainSpec, input, plan, shiftRangeDays)} AS {QuoteIdentifier(column)}");
+                parts.Add($"{BuildAnonymizeCall(plainSpec, input, plan, shiftRangeDays, firstNameColumn, lastNameColumn)} AS {QuoteIdentifier(column)}");
                 continue;
             }
 
@@ -142,7 +198,7 @@ public sealed class ApplyPhase
                 var segments = path.Split('.', StringSplitOptions.RemoveEmptyEntries);
                 var segmentsLiteral = "{" + string.Join(",", segments.Select(EscapeSqlString)) + "}";
                 var input = $"{QuoteIdentifier(column)}#>>'{segmentsLiteral}'";
-                var call = BuildAnonymizeCall(spec, input, plan, shiftRangeDays);
+                var call = BuildAnonymizeCall(spec, input, plan, shiftRangeDays, firstNameColumn, lastNameColumn);
                 // anonymize.* возвращает TEXT; to_jsonb — в скалярный jsonb.
                 // jsonb_set_lax + 'return_target': путь отсутствует или равен JSON null —
                 // вход NULL → STRICT-функция → NULL → jsonb_set вернул бы NULL для всей

@@ -15,7 +15,9 @@ builder.Services.AddHangfire(config => config
 // Сервер Hangfire живёт только в Worker (8.2): контейнер Api не может резолвить
 // фазовые интерфейсы Core, и второй сервер на том же сторадже гонялся бы с Worker
 builder.Services.AddSingleton(new PlanRepository(builder.Configuration.GetConnectionString("PgMeta")!));
-builder.Services.AddSingleton<PlanFreezer>();
+builder.Services.AddSingleton(sp => new PlanFreezer(
+    sp.GetRequiredService<PlanRepository>(),
+    builder.Configuration.GetValue<int>("Agents:PoolSize")));
 builder.Services.AddSingleton(new ReportRepository(builder.Configuration.GetConnectionString("PgMeta")!));
 builder.Services.AddSingleton(new JobRepository(builder.Configuration.GetConnectionString("PgMeta")!));
 builder.Services.AddSingleton<JobService>();

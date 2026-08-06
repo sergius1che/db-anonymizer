@@ -72,6 +72,92 @@ public sealed class PlanRepositoryTests : IAsyncLifetime
         Assert.Equal("seed-2", loaded.Seed);
     }
 
+    [Fact]
+    public async Task TryFreezeAsync_RowNotYetSaved_InsertsAndSucceeds()
+    {
+        // TryFreezeAsync теперь один условный upsert — должен заморозить и без
+        // предварительного SaveAsync(draft) (иначе для этого нужен был отдельный
+        // безусловный шаг перед ним, который и открывал гонку — см. PlanFreezer)
+        var repository = new PlanRepository(_connectionString);
+        var frozen = NewPlan("never-saved-plan", "hash-a");
+
+        var succeeded = await repository.TryFreezeAsync(frozen);
+
+        Assert.True(succeeded);
+        var loaded = await repository.LoadAsync(frozen.Id);
+        Assert.NotNull(loaded);
+        Assert.Equal(frozen.FrozenAt, loaded!.FrozenAt);
+    }
+
+    [Fact]
+    public async Task TryFreezeAsync_DraftRow_Succeeds()
+    {
+        var repository = new PlanRepository(_connectionString);
+        var draft = NewDraftPlan("draft-plan", "hash-a");
+        await repository.SaveAsync(draft);
+        var frozen = NewPlan("draft-plan", "hash-a");
+
+        var succeeded = await repository.TryFreezeAsync(frozen);
+
+        Assert.True(succeeded);
+        var loaded = await repository.LoadAsync("draft-plan");
+        Assert.Equal(frozen.FrozenAt, loaded!.FrozenAt);
+    }
+
+    [Fact]
+    public async Task TryFreezeAsync_AlreadyFrozenRow_FailsAndLeavesRowUnchanged()
+    {
+        var repository = new PlanRepository(_connectionString);
+        var firstFreeze = NewPlan("already-frozen-plan", "hash-a");
+        await repository.TryFreezeAsync(firstFreeze);
+        var secondFreeze = NewPlan("already-frozen-plan", "hash-b");
+
+        var succeeded = await repository.TryFreezeAsync(secondFreeze);
+
+        Assert.False(succeeded);
+        var loaded = await repository.LoadAsync("already-frozen-plan");
+        Assert.Equal("hash-a", loaded!.ContentHash);
+        Assert.Equal(firstFreeze.FrozenAt, loaded.FrozenAt);
+    }
+
+    [Fact]
+    public async Task TryFreezeAsync_ConcurrentCallsOnDraft_OnlyOneSucceeds()
+    {
+        // Регрессия: раньше PlanFreezer делал безусловный SaveAsync(draft) перед
+        // TryFreezeAsync — окно между ними позволяло ДВУМ параллельным freeze
+        // оба пройти условие "план ещё черновик". Один условный upsert закрывает
+        // гонку: ровно один из двух конкурентных вызовов должен победить.
+        var repository = new PlanRepository(_connectionString);
+        var draft = NewDraftPlan("racing-plan", "hash-a");
+        await repository.SaveAsync(draft);
+        var attempt1 = NewPlan("racing-plan", "hash-attempt-1");
+        var attempt2 = NewPlan("racing-plan", "hash-attempt-2");
+
+        var results = await Task.WhenAll(
+            repository.TryFreezeAsync(attempt1),
+            repository.TryFreezeAsync(attempt2));
+
+        Assert.Equal(1, results.Count(r => r));
+    }
+
+    private static Plan NewDraftPlan(string id, string contentHash, string seed = "seed-1")
+    {
+        var plan = NewPlan(id, contentHash, seed);
+        return new Plan
+        {
+            Id = plan.Id,
+            SourceHash = plan.SourceHash,
+            Seed = plan.Seed,
+            SuffixWidth = plan.SuffixWidth,
+            Version = plan.Version,
+            ContentHash = plan.ContentHash,
+            MaterialsHash = plan.MaterialsHash,
+            FrozenAt = default,
+            Columns = plan.Columns,
+            Pools = plan.Pools
+        };
+    }
+
     private static Plan NewPlan(string id, string contentHash, string seed = "seed-1") => new()
     {
         Id = id,

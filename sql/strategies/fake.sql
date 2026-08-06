@@ -5,6 +5,7 @@ CREATE OR REPLACE FUNCTION anonymize.fake(
     seed TEXT,
     original TEXT,
     component TEXT,
+    pool_size BIGINT,
     suffix_width INT
 ) RETURNS TEXT AS $$
 DECLARE
@@ -12,10 +13,10 @@ DECLARE
     val TEXT;
     suf TEXT;
 BEGIN
-    EXECUTE format(
-        'SELECT (SELECT count(*) FROM materials.pool_%I)::BIGINT', component
-    ) INTO idx; -- размер пула, дальше используем как modulus
-    idx := utils.hmac_mod(seed, original, idx); -- 0-based индекс → id пула 0..N-1
+    -- pool_size приходит из замороженного плана (Plan.Pools), не из живого count(*):
+    -- модуль хэширования должен быть стабилен между независимыми прогонами Enrich
+    -- одного и того же плана, даже если LLM в следующий раз вернёт другой набор слов
+    idx := utils.hmac_mod(seed, original, pool_size); -- 0-based индекс → id пула 0..N-1
     EXECUTE format(
         'SELECT value FROM materials.pool_%I WHERE id = $1', component
     ) INTO val USING idx;

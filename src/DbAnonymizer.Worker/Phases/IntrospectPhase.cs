@@ -34,17 +34,23 @@ public sealed class IntrospectPhase : IIntrospectPhase
     {
         try
         {
+            var job = await _jobs.GetAsync(jobId, cancellationToken)
+                ?? throw new InvalidOperationException($"Job '{jobId}' not found");
             var candidates = await _engine.RunAsync(_sandboxConnectionString, cancellationToken);
             var counts = await LoadCountsAsync(candidates, cancellationToken);
 
             // Черновик плана: стратегии не выбираем — это дело человека на ревью;
             // RowCount/DistinctCount считаем здесь, иначе Verify-проверки (Task 7.2)
-            // на нулях черновика дадут ложные фейлы на непустых таблицах
+            // на нулях черновика дадут ложные фейлы на непустых таблицах.
+            // Seed/SuffixWidth — явные входы задачи (спека): если пользователь задал
+            // их при создании job (POST /jobs), используем как есть; иначе подставляем
+            // значения по умолчанию — фактически использованные попадут в план/отчёт.
             var draft = new Plan
             {
                 Id = jobId,
                 SourceHash = ComputeSourceHash(candidates),
-                Seed = Guid.NewGuid().ToString("N"),
+                Seed = string.IsNullOrWhiteSpace(job.Seed) ? Guid.NewGuid().ToString("N") : job.Seed,
+                SuffixWidth = job.SuffixWidth ?? 6,
                 Version = "1",
                 ContentHash = string.Empty,   // считается при фризе
                 MaterialsHash = string.Empty, // считается при enrich

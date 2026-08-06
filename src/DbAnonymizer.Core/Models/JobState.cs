@@ -23,4 +23,9 @@ public sealed class JobState
     public DateTime CreatedAt { get; init; }
     public DateTime? CompletedAt { get; init; }
     public SourceSpec? Source { get; init; }
+    // Явные входы задачи (спека): seed и ширина суффикса. Null — не указаны
+    // пользователем, Introspect подставит собственные значения (случайный seed,
+    // suffix width по умолчанию) и запишет фактически использованные в план/отчёт.
+    public string? Seed { get; init; }
+    public int? SuffixWidth { get; init; }
 }

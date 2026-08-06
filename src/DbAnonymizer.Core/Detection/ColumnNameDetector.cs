@@ -25,6 +25,9 @@ public sealed class ColumnNameDetector : IDetector
 
         // Получаем список всех колонок из information_schema + признак участия в
         // UNIQUE/PRIMARY KEY (для суффикс-гарда и проверки Unique в VerifyPhase).
+        // Только single-column ключи делают колонку саму по себе уникальной —
+        // composite PK/UNIQUE (несколько колонок в одном constraint) гарантирует
+        // уникальность лишь КОМБИНАЦИИ, у отдельной колонки значения могут повторяться.
         await using var cmd = new NpgsqlCommand(
             @"SELECT c.table_schema, c.table_name, c.column_name, c.data_type,
                      c.character_maximum_length,
@@ -39,6 +42,13 @@ public sealed class ColumnNameDetector : IDetector
                            AND kcu.table_schema = c.table_schema
                            AND kcu.table_name = c.table_name
                            AND kcu.column_name = c.column_name
+                           AND (
+                               SELECT count(*)
+                               FROM information_schema.key_column_usage kcu2
+                               WHERE kcu2.constraint_catalog = tc.constraint_catalog
+                                 AND kcu2.constraint_schema = tc.constraint_schema
+                                 AND kcu2.constraint_name = tc.constraint_name
+                           ) = 1
                      ) AS is_unique
               FROM information_schema.columns c
               WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema')
