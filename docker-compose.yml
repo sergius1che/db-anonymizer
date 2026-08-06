@@ -43,7 +43,9 @@ services:
       timeout: 3s
       retries: 5
 
-  # API: минимальный ASP.NET Core — задачи, ревью плана, отчёты, статичный UI
+  # API: минимальный ASP.NET Core — задачи, ревью плана, отчёты, статичный UI.
+  # ./dumps смонтирован тем же путём, что и в worker: POST /jobs/upload пишет
+  # сюда файл, а Ingest (в worker) читает его оттуда же по общему bind mount'у
   api:
     build:
       context: .
@@ -53,6 +55,8 @@ services:
     environment:
       ConnectionStrings__PgMeta: "Host=pg-meta;Database=db_anonymizer_meta;Username=anonymizer;Password=anonymizer"
       Agents__BaseUrl: "http://agents:8000"
+    volumes:
+      - ./dumps:/app/dumps
     depends_on:
       pg-meta:
         condition: service_healthy

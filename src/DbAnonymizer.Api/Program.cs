@@ -21,6 +21,8 @@ builder.Services.AddSingleton(sp => new PlanFreezer(
 builder.Services.AddSingleton(new ReportRepository(builder.Configuration.GetConnectionString("PgMeta")!));
 builder.Services.AddSingleton(new JobRepository(builder.Configuration.GetConnectionString("PgMeta")!));
 builder.Services.AddSingleton<JobService>();
+builder.Services.AddSingleton(new DumpUploadStorage(
+    builder.Configuration["Uploads:Directory"] ?? "./dumps/uploads"));
 
 var app = builder.Build();
 

@@ -64,8 +64,15 @@ docker compose exec pg-sandbox pg_dump -U anonymizer -d db_demo_src -Fd -j 4 -f 
 docker compose cp pg-sandbox:/demo ./dumps/demo
 docker compose exec pg-sandbox dropdb -U anonymizer db_demo_src
 
-# 5. Создать задачу (идентификатор из ответа запомните). seed/suffixWidth —
-#    явные входы задачи, опциональны (без них Introspect подставит свои значения)
+# 5. Создать задачу — форма на http://localhost:8080 («Новая задача») грузит
+#    файл дампа прямо с компьютера пользователя (без доступа к серверу),
+#    либо CLI (идентификатор из ответа запомните). Загрузка файла:
+curl -X POST http://localhost:8080/jobs/upload \
+  -F "file=@./mydump.dump" \
+  -F "seed=my-seed"
+# → {"id":"<jobId>","status":0,"source":{"dumpFilePath":"./dumps/uploads/upload-<guid>.dump",...},...}
+
+# ...или путь на сервере (для directory-формата, недоступного через upload):
 curl -X POST http://localhost:8080/jobs \
   -H "Content-Type: application/json" \
   -d '{"source": {"dumpFilePath": "dumps/demo"}}'
@@ -156,7 +163,11 @@ LiteLLM поддерживает и другие провайдеры (anthropic
    роль источника должна иметь право чтения, лучше выделить целевую реплику.
 3. **Входной дамп — только custom/directory** (не plain SQL): параллельный
    `pg_restore -j` работает лишь с форматами `-Fc`/`-Fd` (именно их даёт
-   `pg_dump -Fd` в демо выше).
+   `pg_dump -Fd` в демо выше). `POST /jobs/upload` (форма на главной) принимает
+   только custom-формат (`-Fc`, один файл) — directory-формат состоит из
+   нескольких файлов и через одиночную загрузку не проходит; для него — путь
+   на сервере через `POST /jobs`. Ограничение на размер файла не настроено —
+   зависит от дефолтов Kestrel, для больших БД используйте путь на сервере.
 4. **pg_dump/pg_restore в PATH**: воркер спавнит их — в образе воркера они
    установлены; для локального запуска воркера вне Docker поставьте
    PostgreSQL 16 client.
@@ -197,6 +208,7 @@ LiteLLM поддерживает и другие провайдеры (anthropic
 | `Agents__BaseUrl` | api, worker | `http://agents:8000` | адрес агентов |
 | `Agents__PoolSize` | api, worker | `300` | размер пула значений (фризится с планом) |
 | `Sink__OutputDirectory` | worker | `./dumps` | каталог выходных дампов |
+| `Uploads__Directory` | api | `./dumps/uploads` | куда `POST /jobs/upload` пишет загруженный файл (тот же bind mount, что у worker) |
 | `LLM_PROVIDER` / `LLM_MODEL` / `OPENAI_API_KEY` | agents | `fake` / `gpt-4o-mini` / — | генератор значений |
 
 Локальный запуск без Docker: `dotnet run --project src/DbAnonymizer.Api`
@@ -210,7 +222,7 @@ LiteLLM поддерживает и другие провайдеры (anthropic
 dotnet build DbAnonymizer.slnx -c Release            # 0 ошибок, 0 предупреждений
 dotnet test tests/DbAnonymizer.Core.Tests            # 31/31, нужен Docker (Testcontainers)
 dotnet test tests/DbAnonymizer.Integration.Tests     # 16/16, нужен Docker (Testcontainers)
-dotnet test tests/DbAnonymizer.Api.Tests             # 7/7, нужен Docker (Testcontainers)
+dotnet test tests/DbAnonymizer.Api.Tests             # 10/10, нужен Docker (Testcontainers)
 ```
 
 ## Архитектура
@@ -231,7 +243,7 @@ dotnet test tests/DbAnonymizer.Api.Tests             # 7/7, нужен Docker (T
 ## Проверено
 
 - `dotnet build DbAnonymizer.slnx -c Release` — 0 ошибок, 0 предупреждений.
-- `dotnet test` — Core 31/31, Api 7/7, Integration 16/16 (Docker).
+- `dotnet test` — Core 31/31, Api 10/10, Integration 16/16 (Docker).
 - `docker compose config` — валиден, без предупреждений.
 - `docker compose build` — образы api, worker, agents, seed собираются.
 - Полный демо-прогон «до/после» через `docker compose up` по инструкции выше:

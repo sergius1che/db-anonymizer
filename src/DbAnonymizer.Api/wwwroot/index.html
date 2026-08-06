@@ -15,6 +15,22 @@
     h1 { margin-top: 0; }
     ul { padding-left: 1.25rem; }
     a { color: #0b5fa5; }
+    .field { margin-bottom: 1rem; }
+    .field label { display: block; font-weight: 600; margin-bottom: 0.25rem; }
+    .field .radio-row { display: flex; gap: 1.5rem; font-weight: 400; }
+    .field .radio-row label { display: inline-flex; align-items: center; gap: 0.35rem; font-weight: 400; margin: 0; }
+    .field input[type="text"], .field input[type="number"] {
+      width: 100%; box-sizing: border-box; padding: 0.5rem 0.6rem;
+      border: 1px solid #cbd2d9; border-radius: 6px; font-size: 1rem;
+    }
+    .hint { color: #6b7280; font-size: 0.85rem; margin-top: 0.25rem; }
+    button.submit {
+      background: #0b5fa5; color: #fff; border: 0; border-radius: 6px;
+      padding: 0.6rem 1.5rem; font-size: 1rem; cursor: pointer;
+    }
+    button.submit:disabled { background: #9aa4af; cursor: not-allowed; }
+    .error { color: #b42318; background: #fef3f2; border: 1px solid #fecdca; padding: 0.75rem 1rem; border-radius: 6px; margin-top: 1rem; }
+    .ok { color: #1f6d1f; background: #eef6ee; border: 1px solid #c6e2c6; padding: 0.75rem 1rem; border-radius: 6px; margin-top: 1rem; }
   </style>
 </head>
 <body>
@@ -22,11 +38,115 @@
     <h1>DbAnonymizer</h1>
     <p>Санитизация копий баз данных: персональные и чувствительные данные заменяются
       синтетическими значениями, чтобы дамп можно было безопасно передать командам разработки.</p>
+
+    <h2>Новая задача</h2>
+    <form id="create-job-form">
+      <div class="field">
+        <label>Источник</label>
+        <div class="radio-row">
+          <label><input type="radio" name="source-kind" value="dump" checked> Файл дампа</label>
+          <label><input type="radio" name="source-kind" value="live"> Живая БД</label>
+        </div>
+      </div>
+      <div class="field" id="dump-field">
+        <label for="dump-file">Файл дампа (custom-формат — `pg_dump -Fc`)</label>
+        <input type="file" id="dump-file">
+        <p class="hint">Только custom-формат (один файл). Для directory-формата (`-Fd`,
+          параллельный дамп больших БД) — путь на сервере через API (см. README).</p>
+      </div>
+      <div class="field" id="live-field" hidden>
+        <label for="connection-string">Connection string</label>
+        <input type="text" id="connection-string"
+          placeholder="Host=...;Port=5432;Database=...;Username=...;Password=...">
+        <p class="hint">Роль источника должна иметь право только на чтение (см. «Ограничения» в README).</p>
+      </div>
+      <div class="field">
+        <label for="seed">Seed (опционально)</label>
+        <input type="text" id="seed" placeholder="автоматически, если не указан">
+      </div>
+      <div class="field">
+        <label for="suffix-width">Ширина суффикса (опционально)</label>
+        <input type="number" id="suffix-width" min="0" placeholder="6 по умолчанию">
+      </div>
+      <button class="submit" type="submit" id="submit-btn">Создать задачу</button>
+    </form>
+    <div id="create-error" class="error" hidden></div>
+    <div id="create-ok" class="ok" hidden></div>
+
     <h2>Экраны</h2>
     <ul>
       <li><a href="jobs.html">Задачи обезличивания</a> — список задач: ревью плана,
         заморозка, отчёты о результате.</li>
     </ul>
   </main>
+  <script>
+    const dumpRadio = document.querySelector('input[name="source-kind"][value="dump"]');
+    const liveRadio = document.querySelector('input[name="source-kind"][value="live"]');
+    const dumpField = document.getElementById('dump-field');
+    const liveField = document.getElementById('live-field');
+
+    function updateSourceFields() {
+      const isLive = liveRadio.checked;
+      dumpField.hidden = isLive;
+      liveField.hidden = !isLive;
+    }
+    dumpRadio.addEventListener('change', updateSourceFields);
+    liveRadio.addEventListener('change', updateSourceFields);
+
+    document.getElementById('create-job-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const errorBox = document.getElementById('create-error');
+      const okBox = document.getElementById('create-ok');
+      errorBox.hidden = true;
+      okBox.hidden = true;
+
+      const dumpFile = document.getElementById('dump-file').files[0];
+      const connectionString = document.getElementById('connection-string').value.trim();
+      const seed = document.getElementById('seed').value.trim();
+      const suffixWidthRaw = document.getElementById('suffix-width').value.trim();
+
+      if (liveRadio.checked ? !connectionString : !dumpFile) {
+        errorBox.textContent = liveRadio.checked
+          ? 'Укажите connection string.'
+          : 'Выберите файл дампа.';
+        errorBox.hidden = false;
+        return;
+      }
+
+      const button = document.getElementById('submit-btn');
+      button.disabled = true;
+      try {
+        let response;
+        if (liveRadio.checked) {
+          // Живая БД — источник уже виден воркеру по сети, файл не нужен
+          const body = { source: { connectionString } };
+          if (seed) body.seed = seed;
+          if (suffixWidthRaw) body.suffixWidth = Number(suffixWidthRaw);
+          response = await fetch('/jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+          });
+        } else {
+          // Файл дампа — грузим на сервер, POST /jobs/upload сохраняет его
+          // в каталог, общий с воркером (см. docker-compose.yml), и создаёт задачу
+          const formData = new FormData();
+          formData.append('file', dumpFile);
+          if (seed) formData.append('seed', seed);
+          if (suffixWidthRaw) formData.append('suffixWidth', suffixWidthRaw);
+          response = await fetch('/jobs/upload', { method: 'POST', body: formData });
+        }
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const job = await response.json();
+        okBox.textContent = 'Задача создана: ' + job.id + '. Переход к списку задач…';
+        okBox.hidden = false;
+        setTimeout(() => { window.location.href = 'jobs.html'; }, 800);
+      } catch (err) {
+        errorBox.textContent = 'Не удалось создать задачу: ' + err.message;
+        errorBox.hidden = false;
+        button.disabled = false;
+      }
+    });
+  </script>
 </body>
 </html>

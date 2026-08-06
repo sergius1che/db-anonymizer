@@ -109,6 +109,59 @@ public sealed class JobsEndpointsTests : IClassFixture<ApiTestFixture>
     }
 
     [Fact]
+    public async Task PostJobsUpload_SavesFileAndCreatesJob()
+    {
+        // Пользователь без доступа к файловой системе сервера — единственный
+        // способ передать дамп. Файл должен реально лечь на диск в каталоге,
+        // который worker видит по тому же смонтированному пути (docker-compose.yml)
+        var client = _app.CreateClient();
+        var fileBytes = "fake dump content"u8.ToArray();
+        using var content = new MultipartFormDataContent();
+        content.Add(new ByteArrayContent(fileBytes), "file", "mydump.dump");
+
+        var response = await client.PostAsync("/jobs/upload", content);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var created = await response.Content.ReadFromJsonAsync<JobState>();
+        Assert.NotNull(created);
+        var savedPath = created!.Source!.DumpFilePath;
+        Assert.StartsWith(
+            _app.UploadsDirectory.Replace('\\', '/'), savedPath.Replace('\\', '/'));
+        Assert.True(File.Exists(savedPath));
+        Assert.Equal(fileBytes, await File.ReadAllBytesAsync(savedPath));
+    }
+
+    [Fact]
+    public async Task PostJobsUpload_EmptyFile_ReturnsBadRequest()
+    {
+        var client = _app.CreateClient();
+        using var content = new MultipartFormDataContent();
+        content.Add(new ByteArrayContent([]), "file", "empty.dump");
+
+        var response = await client.PostAsync("/jobs/upload", content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task PostJobsUpload_WithSeedAndSuffixWidth_PersistsThemOnTheJob()
+    {
+        var client = _app.CreateClient();
+        using var content = new MultipartFormDataContent();
+        content.Add(new ByteArrayContent("dump"u8.ToArray()), "file", "d.dump");
+        content.Add(new StringContent("explicit-seed-upload"), "seed");
+        content.Add(new StringContent("9"), "suffixWidth");
+
+        var response = await client.PostAsync("/jobs/upload", content);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var created = await response.Content.ReadFromJsonAsync<JobState>();
+        Assert.NotNull(created);
+        Assert.Equal("explicit-seed-upload", created!.Seed);
+        Assert.Equal(9, created.SuffixWidth);
+    }
+
+    [Fact]
     public async Task GetJobById_ReturnsJob()
     {
         var client = _app.CreateClient();

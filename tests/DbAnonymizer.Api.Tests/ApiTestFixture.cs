@@ -9,12 +9,18 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
 {
     private readonly PostgreSqlContainer _container =
         new PostgreSqlBuilder("postgres:16-alpine").Build();
+    private readonly string _uploadsDirectory =
+        Path.Combine(Path.GetTempPath(), "dbanonymizer-test-uploads-" + Guid.NewGuid().ToString("N"));
     private readonly object _sync = new();
     private bool _started;
+
+    public string UploadsDirectory => _uploadsDirectory;
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseSetting("ConnectionStrings:PgMeta", _container.GetConnectionString());
+        // Каталог загрузок — во временную папку теста, не в репозиторий (см. DumpUploadStorage)
+        builder.UseSetting("Uploads:Directory", _uploadsDirectory);
     }
 
     public Task InitializeAsync()
@@ -37,6 +43,8 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
 
     public new async Task DisposeAsync()
     {
+        if (Directory.Exists(_uploadsDirectory))
+            Directory.Delete(_uploadsDirectory, recursive: true);
         await _container.DisposeAsync();
         await base.DisposeAsync();
     }
