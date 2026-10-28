@@ -16,6 +16,34 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <FrontendRoot>$(MSBuildProjectDirectory)/ClientApp/</FrontendRoot>
+    <BuildFrontend Condition="'$(BuildFrontend)' == ''">true</BuildFrontend>
+    <!-- F5 must run MSBuild even when only JSX/CSS changed. -->
+    <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
+    <DefaultItemExcludes>$(DefaultItemExcludes);ClientApp/node_modules/**</DefaultItemExcludes>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Content Remove="ClientApp/**" />
+    <None Remove="ClientApp/node_modules/**" />
+  </ItemGroup>
+
+  <Target Name="RestoreFrontend" Condition="'$(BuildFrontend)' == 'true' And '$(DesignTimeBuild)' != 'true'"
+          Inputs="$(FrontendRoot)package.json;$(FrontendRoot)package-lock.json"
+          Outputs="$(FrontendRoot)node_modules/.restore-stamp">
+    <Exec Command="node --version" WorkingDirectory="$(FrontendRoot)" />
+    <Exec Command="npm ci --no-audit --no-fund" WorkingDirectory="$(FrontendRoot)" />
+    <Touch Files="$(FrontendRoot)node_modules/.restore-stamp" AlwaysCreate="true" />
+  </Target>
+
+  <Target Name="BuildReact" BeforeTargets="AssignTargetPaths" DependsOnTargets="RestoreFrontend"
+          Condition="'$(BuildFrontend)' == 'true' And '$(DesignTimeBuild)' != 'true'">
+    <Exec Command="npm run build" WorkingDirectory="$(FrontendRoot)" />
+    <!-- Re-evaluate after Vite runs: clean builds have no wwwroot at evaluation time. -->
+    <ItemGroup>
+      <Content Remove="wwwroot/**" />
+      <Content Include="wwwroot/**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
 
 </Project>

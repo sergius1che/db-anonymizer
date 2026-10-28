@@ -97,6 +97,64 @@ docker compose exec pg-sandbox psql -U anonymizer -d db_anonymizer_sandbox -c \
   "SELECT card_number FROM orders LIMIT 3;"
 ```
 
+## Запуск API и React из Visual Studio и CLI
+
+Для локальной сборки нужны .NET SDK 10, Node.js 22.12+ с npm в `PATH`
+([требования Vite](https://vite.dev/guide/)) и Visual Studio с поддержкой .NET 10.
+React-код находится в `src/DbAnonymizer.Api/ClientApp`. При сборке API MSBuild
+автоматически выполняет `npm ci` (при первом запуске и изменении lock-файла),
+затем `npm run build`. Результат создаётся в `wwwroot` и раздаётся API на том же
+порту. Отдельно запускать npm или сервер фронтенда не требуется. Для первой
+сборки нужен доступ к npm registry; изменения JSX/CSS подхватываются следующей
+сборкой/запуском API. `dotnet run --no-build` использует ранее собранный интерфейс.
+
+В Visual Studio откройте `DbAnonymizer.slnx`, назначьте `DbAnonymizer.Api`
+стартовым проектом и выберите профиль `http` или `https`. F5/Ctrl+F5 соберёт
+React и API и откроет главную страницу в браузере. Базы, Worker и агенты нужны
+для выполнения задач; запуск API сам по себе запускает веб-приложение.
+
+Пример CLI из корня репозитория (PowerShell), с API и Worker на хосте:
+
+```powershell
+# 1. Зависимости: PostgreSQL и агенты (Docker Desktop должен быть запущен)
+docker compose up -d --build pg-meta pg-sandbox agents
+
+# 2. Общий каталог дампов: абсолютный путь нужен обоим процессам,
+#    поскольку dotnet run использует рабочий каталог соответствующего проекта.
+New-Item -ItemType Directory -Force ./dumps/uploads | Out-Null
+$env:Uploads__Directory = Join-Path (Get-Location).Path 'dumps/uploads'
+
+# 3. API + автоматическая сборка React
+dotnet run --project src/DbAnonymizer.Api --launch-profile http
+# Откройте http://localhost:5222 (CLI не открывает браузер автоматически)
+```
+
+Во втором терминале, также из корня репозитория:
+
+```powershell
+# PostgreSQL 16 client tools (pg_dump и pg_restore) должны быть в PATH
+$env:Sink__OutputDirectory = Join-Path (Get-Location).Path 'dumps'
+dotnet run --project src/DbAnonymizer.Worker
+```
+
+Для F5 задайте `Uploads__Directory` абсолютным путём в окружении Visual Studio
+(или через `Uploads:Directory` в конфигурации API).
+Если запускаете Worker в контейнере, путь загрузки API должен быть доступен
+воркеру по тому же пути; приведённый пример предполагает **оба процесса на хосте**.
+Подключения по умолчанию: pg-meta `localhost:5432`, pg-sandbox `localhost:5433`,
+agents `http://localhost:8000`. Для живой БД используйте адрес, доступный Worker.
+
+Публикация приложения вместе с React:
+
+```powershell
+dotnet publish src/DbAnonymizer.Api -c Release -o ./artifacts/api
+```
+
+В опубликованном приложении Node.js не нужен. Docker-сборка также собирает React
+в отдельном Node-этапе: `docker compose up -d --build` запускает весь стек.
+Старые ссылки `/jobs.html`, `/plan-review.html?id=...`, `/report.html?id=...`
+сохранены и открывают соответствующие React-экраны.
+
 ### Пример «до/после»
 
 Демо-схема (`src/DbAnonymizer.Seed/Schema/demo-schema.sql`): `users` (ФИО, email,
@@ -219,10 +277,12 @@ LiteLLM поддерживает и другие провайдеры (anthropic
 ## Тесты
 
 ```bash
-dotnet build DbAnonymizer.slnx -c Release            # 0 ошибок, 0 предупреждений
+dotnet build DbAnonymizer.slnx -c Release
 dotnet test tests/DbAnonymizer.Core.Tests            # 31/31, нужен Docker (Testcontainers)
 dotnet test tests/DbAnonymizer.Integration.Tests     # 16/16, нужен Docker (Testcontainers)
-dotnet test tests/DbAnonymizer.Api.Tests             # 10/10, нужен Docker (Testcontainers)
+dotnet test tests/DbAnonymizer.Api.Tests             # 19 тестов, для API-тестов нужен Docker
+npm --prefix src/DbAnonymizer.Api/ClientApp ci
+npm --prefix src/DbAnonymizer.Api/ClientApp test      # 7 тестов React, Docker не нужен
 ```
 
 ## Архитектура
@@ -230,7 +290,8 @@ dotnet test tests/DbAnonymizer.Api.Tests             # 10/10, нужен Docker 
 | Компонент | Что делает |
 |---|---|
 | `src/DbAnonymizer.Core/` | модели домена, детекторы, построители материалов, заморозка плана, адаптеры pg_dump/pg_restore |
-| `src/DbAnonymizer.Api/` | ASP.NET Core Minimal API + статичный UI ревью плана |
+| `src/DbAnonymizer.Api/` | ASP.NET Core Minimal API + React UI |
+| `src/DbAnonymizer.Api/ClientApp/` | React + Vite: создание задач, список, ревью плана, отчёты; собирается в `wwwroot` |
 | `src/DbAnonymizer.Worker/` | Hangfire-воркер: фазы Ingest / Introspect / Enrich / Apply / Verify |
 | `src/DbAnonymizer.Agents/` | Python-сервис: FastAPI + LangGraph + LiteLLM, `POST /generate` |
 | `src/DbAnonymizer.Seed/` | генератор демо-данных (Bogus) |
@@ -242,8 +303,12 @@ dotnet test tests/DbAnonymizer.Api.Tests             # 10/10, нужен Docker 
 
 ## Проверено
 
-- `dotnet build DbAnonymizer.slnx -c Release` — 0 ошибок, 0 предупреждений.
-- `dotnet test` — Core 31/31, Api 10/10, Integration 16/16 (Docker).
+- `dotnet build DbAnonymizer.slnx -c Release` — 0 ошибок; тестовые зависимости
+  выдают существующие предупреждения NU1903 для SSH.NET.
+- `dotnet test` — Core 31/31, Api 19/19, Integration 16/16 (Docker).
+- React: `npm --prefix src/DbAnonymizer.Api/ClientApp test` — 7/7.
+- `dotnet publish src/DbAnonymizer.Api -c Release` включает React; проверена
+  отдача страниц, JS/CSS и JSON API из опубликованного приложения и через CLI.
 - `docker compose config` — валиден, без предупреждений.
 - `docker compose build` — образы api, worker, agents, seed собираются.
 - Полный демо-прогон «до/после» через `docker compose up` по инструкции выше:

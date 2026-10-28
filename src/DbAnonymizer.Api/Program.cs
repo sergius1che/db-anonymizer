@@ -26,9 +26,10 @@ builder.Services.AddSingleton(new DumpUploadStorage(
 
 var app = builder.Build();
 
-// Статичный UI ревью (wwwroot): index.html отдаётся на "/", остальное — по именам
-app.UseDefaultFiles();
+// React assets are built into wwwroot by MSBuild/Vite.
 app.UseStaticFiles();
+
+app.MapFrontendEndpoints();
 
 app.MapJobsEndpoints();
 app.MapPlanEndpoints();

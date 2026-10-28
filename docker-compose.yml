@@ -43,7 +43,7 @@ services:
       timeout: 3s
       retries: 5
 
-  # API: минимальный ASP.NET Core — задачи, ревью плана, отчёты, статичный UI.
+  # API: ASP.NET Core — задачи, ревью плана, отчёты и собранный React UI.
   # ./dumps смонтирован тем же путём, что и в worker: POST /jobs/upload пишет
   # сюда файл, а Ingest (в worker) читает его оттуда же по общему bind mount'у
   api:

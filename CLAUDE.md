@@ -21,6 +21,7 @@ handed over to development teams.
 |------|------------|
 | `src/DbAnonymizer.Core/` | Core library: domain models, detectors, strategies, plan freeze |
 | `src/DbAnonymizer.Api/` | ASP.NET Core Minimal API: jobs, plan review, reports |
+| `src/DbAnonymizer.Api/ClientApp/` | React + Vite UI; MSBuild compiles it into generated `wwwroot/` on API build |
 | `src/DbAnonymizer.Worker/` | Hangfire worker: ingest, introspect, enrich, apply, verify phases |
 | `src/DbAnonymizer.Agents/` | Python service: LangGraph + LiteLLM value pool generation |
 | `src/DbAnonymizer.Seed/` | Demo data generator (Bogus) |

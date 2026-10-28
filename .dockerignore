@@ -9,3 +9,7 @@ dumps
 **/__pycache__
 **/*.egg-info
 *.env
+**/node_modules
+src/DbAnonymizer.Api/wwwroot
+artifacts
+**/TestResults
